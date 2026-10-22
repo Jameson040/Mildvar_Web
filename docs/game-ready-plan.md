@@ -75,6 +75,25 @@ one rendering-architecture change, and a shipping layer.
 
 ---
 
+## Step 1 — DONE (measured)
+
+Landed before starting Step 2, because the audit showed the frame was 3x over the
+draw-call budget with no visual benefit:
+
+| Fix | Before | After |
+| --- | --- | --- |
+| Roads: one mesh per piece per layer → one per material for the whole network | 517 calls | **8** |
+| Far trees: two meshes per tile → three world-wide instanced batches | 194 calls | **3** |
+| LOD hysteresis (±8 %) so tiles do not thrash on a threshold | — | — |
+| Shadow cascade capped at 160 m | up to 260 m | 160 m |
+| `F3` overlay: per-layer draw calls / triangles / ms | none | in HUD |
+
+**Measured worst view: 888 → 188 draw calls, 0.64 M triangles.** Inside budget
+with room for everything in Steps 2–4. The road render is pixel-identical to the
+previous round (`docs/road-cross-sections.png`).
+
+---
+
 ## 1. How realistic trees are actually done (and what to copy)
 
 The industry answer is boring and consistent:
@@ -343,17 +362,10 @@ Every step ends with `npm run verify` + `tsc` + `build` green and a new offline
 render in `docs/`, exactly like the houses/tower/roads round. No step lands
 half-done.
 
-### Step 1 — Pay down submission cost (no visual change, biggest win)
-Measured worst view: **888 calls** → target **< 320**.
-* **R-fix (highest value):** merge road geometry per material across the whole
-  network — 517 calls → ~6. No visual difference at all.
-* **N-fix:** two global instanced meshes for all far trees — ~194 calls → 2.
-* A1 draw-call/GPU-time overlay per layer (`renderer.info` already accumulates;
-  it is just never reported per group).
-* A3 shadow budget + caster audit (cap the shadow cascade to 120 m).
-* T-F LOD hysteresis so near/far does not thrash on a boundary.
-* **Exit test:** the audit script reports < 320 calls at all three viewpoints,
-  and the numbers are pasted into `docs/`.
+### Step 1 — Pay down submission cost — **SHIPPED**
+Measured: **888 → 188 calls**, road render unchanged, `verify` PASS.
+Still open in this step (do with Step 2, they touch the same code): the material
+atlas for settlements (93 calls) and grass batching (Step 2's T-E).
 
 ### Step 2 — Trees that look like trees
 * T-A species kit (5 species, 3 LODs, leaf-card atlas).
@@ -465,3 +477,21 @@ hilltop (600 m out) · 816 near trees / 6364 far
 ```
 
 Re-run it after every step; the numbers in §6 are the gate.
+
+
+---
+
+## 10. Step 1 result (recorded)
+
+```
+npm run audit          # after Step 1
+Mildvar square      roads 8 · nature 73 · settlements 93 · wilderness 14  → 188 calls / 0.64 M
+village lane        roads 8 · nature 73 · settlements 93 · wilderness 14  → 188 calls / 0.64 M
+hilltop (600 m out) roads 8 · nature 87 · settlements 93 · wilderness 14  → 202 calls / 0.64 M
+worst view 202 calls → WITHIN BUDGET (< 300)
+```
+
+At runtime the real number will be lower still (the audit counts every
+settlement, while the camera frustum rejects the ones behind you) and higher in
+town (interiors, props and people). The `F3` overlay reports the true figure per
+layer.

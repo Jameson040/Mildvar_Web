@@ -126,6 +126,7 @@ export default function App() {
   const [frame, setFrame] = useState<FrameStats>({ fps: 0, calls: 0, triangles: 0, chunks: 0 });
   const [stats, setStats] = useState({ houses: 0, trees: 0, villagers: 0, farms: 0, bridges: 0, roadsKm: 0 });
   const [showHelp, setShowHelp] = useState(true);
+  const [showPerf, setShowPerf] = useState(false);
   const [mapOpen, setMapOpen] = useState(false);
   const [discovered, setDiscovered] = useState<string[]>(['mildvar']);
   const [toast, setToast] = useState<string | null>(null);
@@ -274,6 +275,14 @@ export default function App() {
       if (ev.code === 'KeyT') setTilt((t) => !t);
       if (ev.code === 'KeyP') toggleWaterPhysics();
       if (ev.code === 'KeyH') setShowHelp((s) => !s);
+      if (ev.code === 'F3') {
+        ev.preventDefault();
+        setShowPerf((v) => {
+          const next = !v;
+          if (engineRef.current) engineRef.current.showDebug = next;
+          return next;
+        });
+      }
       if (ev.code === 'KeyJ') {
         const next = !questOpen;
         setQuestOpen(next);
@@ -452,6 +461,34 @@ export default function App() {
           <span>·</span><span>{stats.farms} farms</span>
         </div>
       </div>
+
+      {/* F3 performance overlay: per-layer draw calls and triangles */}
+      {showPerf && (
+        <div className="pointer-events-none absolute right-5 top-20 z-40 w-[268px] rounded-xl border border-emerald-300/25 bg-black/75 p-3 font-mono text-[10px] text-emerald-100 shadow-2xl backdrop-blur-md">
+          <div className="mb-1.5 flex items-center justify-between font-serif text-[11px] text-emerald-200">
+            <span>Frame budget</span>
+            <span className="text-white/40">F3 to close</span>
+          </div>
+          <div className="mb-1 flex justify-between text-white/60">
+            <span>{frame.fps} fps · {frame.ms ?? 0} ms</span>
+            <span>{frame.calls} calls · {fmt(frame.triangles)} tris</span>
+          </div>
+          <div className="border-t border-white/10 pt-1.5">
+            {(frame.layers ?? []).map((l) => (
+              <div key={l.name} className="flex justify-between">
+                <span className="text-white/70">{l.name}</span>
+                <span className={l.calls > 120 ? 'text-amber-300' : 'text-emerald-200/80'}>
+                  {String(l.calls).padStart(3)} · {fmt(l.tris)}
+                </span>
+              </div>
+            ))}
+            {(frame.layers ?? []).length === 0 && <div className="text-white/40">collecting…</div>}
+          </div>
+          <div className="mt-1.5 border-t border-white/10 pt-1.5 text-white/40">
+            {frame.chunks} terrain chunks · budget 300 calls
+          </div>
+        </div>
+      )}
 
       {/* Location readout */}
       <div className="pointer-events-none absolute bottom-5 right-5 z-30 rounded-xl border border-white/10 bg-black/40 px-4 py-2 text-right text-[11px] backdrop-blur-md">

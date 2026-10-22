@@ -340,6 +340,20 @@ const _v = new THREE.Vector3();
 const boxM = (x: number, y: number, z: number, sx: number, sy: number, sz: number) =>
   new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion(), new THREE.Vector3(sx, sy, sz));
 
+/**
+ * Append a finished piece into a world-wide accumulator. Roads used to emit one
+ * mesh per 60-sample piece per layer, which cost 500+ draw calls for <90k
+ * triangles; everything now merges into one mesh per material.
+ */
+function appendBuf(dst: Buf, pos: number[], uv: number[], idx: number[], col?: number[]) {
+  const base = dst.pos.length / 3;
+  for (let i = 0; i < pos.length; i++) dst.pos.push(pos[i]);
+  for (let i = 0; i < uv.length; i++) dst.uv.push(uv[i]);
+  if (col) for (let i = 0; i < col.length; i++) dst.col.push(col[i]);
+  else for (let i = 0; i < pos.length / 3; i++) dst.col.push(1, 1, 1);
+  for (let i = 0; i < idx.length; i++) dst.idx.push(base + idx[i]);
+}
+
 /** Append a coloured box (used for milestones) into an accumulator. */
 function pushBox(b: Buf, m: THREE.Matrix4, color: THREE.Color) {
   const p = UNIT_BOX.attributes.position;
@@ -383,6 +397,13 @@ export function createRoadMeshes(tex: TextureSet, list: Road[]) {
   const postPaint = new THREE.Color(0xe9e4d6);
   const tint = new THREE.Color();
   const PIECE = 60;
+  // one accumulator per output mesh, shared by every road and every piece
+  const surfaces = new Map<RoadKind, Buf>();
+  const vergeAcc = newBuf();
+  const rutAcc = newBuf();
+  const kerbAcc = newBuf();
+  const medianAcc = newBuf();
+  const postsAcc = newBuf();
 
   list.forEach((road, roadIndex) => {
     const smp = road.samples;
@@ -416,7 +437,6 @@ export function createRoadMeshes(tex: TextureSet, list: Road[]) {
       const medianUV: number[] = [];
       const medianColors: number[] = [];
       const medianIdx: number[] = [];
-      const posts = newBuf();
       const onBridge: boolean[] = [];
 
       for (let i = start; i <= end; i++) {
@@ -543,8 +563,8 @@ export function createRoadMeshes(tex: TextureSet, list: Road[]) {
             new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(nx, nz)),
             new THREE.Vector3(1, 1, 1),
           );
-          pushBox(posts, pm.clone().multiply(boxM(0, 0.42, 0, 0.3, 0.84, 0.26)), postStone);
-          pushBox(posts, pm.clone().multiply(boxM(0, 0.88, 0, 0.34, 0.16, 0.3)), postPaint);
+          pushBox(postsAcc, pm.clone().multiply(boxM(0, 0.42, 0, 0.3, 0.84, 0.26)), postStone);
+          pushBox(postsAcc, pm.clone().multiply(boxM(0, 0.88, 0, 0.34, 0.16, 0.3)), postPaint);
         }
 
         if (i < end) {
@@ -581,13 +601,24 @@ export function createRoadMeshes(tex: TextureSet, list: Road[]) {
         }
       }
 
-      group.add(ribbonMesh(surface, surfaceUV, surfaceIdx, mats[road.kind], surfaceCol));
-      if (vergeIdx.length) group.add(ribbonMesh(verge, vergeUV, vergeIdx, vergeMat, vergeColors));
-      if (detailIdx.length) group.add(ribbonMesh(detail, detailUV, detailIdx, rutMat));
-      if (kerbIdx.length) group.add(ribbonMesh(kerb, kerbUV, kerbIdx, curbMat, kerbColors));
-      if (medianIdx.length) group.add(ribbonMesh(median, medianUV, medianIdx, vergeMat, medianColors));
-      if (posts.idx.length) group.add(ribbonMesh(posts.pos, posts.uv, posts.idx, postMat, posts.col));
+      let surf = surfaces.get(road.kind);
+      if (!surf) surfaces.set(road.kind, (surf = newBuf()));
+      appendBuf(surf, surface, surfaceUV, surfaceIdx, surfaceCol);
+      if (vergeIdx.length) appendBuf(vergeAcc, verge, vergeUV, vergeIdx, vergeColors);
+      if (detailIdx.length) appendBuf(rutAcc, detail, detailUV, detailIdx);
+      if (kerbIdx.length) appendBuf(kerbAcc, kerb, kerbUV, kerbIdx, kerbColors);
+      if (medianIdx.length) appendBuf(medianAcc, median, medianUV, medianIdx, medianColors);
     }
   });
+  // flush: one mesh per material for the entire road network (was one per
+  // piece per layer — 500+ draw calls for under 90k triangles)
+  for (const [kind, b] of surfaces) {
+    if (b.idx.length) group.add(ribbonMesh(b.pos, b.uv, b.idx, mats[kind], b.col));
+  }
+  if (vergeAcc.idx.length) group.add(ribbonMesh(vergeAcc.pos, vergeAcc.uv, vergeAcc.idx, vergeMat, vergeAcc.col));
+  if (rutAcc.idx.length) group.add(ribbonMesh(rutAcc.pos, rutAcc.uv, rutAcc.idx, rutMat));
+  if (kerbAcc.idx.length) group.add(ribbonMesh(kerbAcc.pos, kerbAcc.uv, kerbAcc.idx, curbMat, kerbAcc.col));
+  if (medianAcc.idx.length) group.add(ribbonMesh(medianAcc.pos, medianAcc.uv, medianAcc.idx, vergeMat, medianAcc.col));
+  if (postsAcc.idx.length) group.add(ribbonMesh(postsAcc.pos, postsAcc.uv, postsAcc.idx, postMat, postsAcc.col));
   return group;
 }

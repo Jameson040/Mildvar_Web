@@ -12,7 +12,7 @@ import {
 } from './land';
 import { buildVillage, buildFarm, BuildCtx, cropBatch, TreeSpecOut, planVillage } from './villageBuilder';
 import { addBoat, buildMillSails, cropTuftGeometry, addMilestone } from './structures';
-import { buildNature, createBirds, ScatterItem, NatureTile } from './scatter';
+import { buildNature, createBirds, ScatterItem, NatureTile, FarForest } from './scatter';
 import { containsPoint } from './placement';
 import { WaterPhysicsSystem, WaterAPI } from './waterPhysics';
 import {
@@ -97,6 +97,8 @@ export class World {
   entities = new Map<string, WorldEntity>();
   interactions!: InteractionSystem;
   natureTiles: NatureTile[] = [];
+  natureFar: FarForest | null = null;
+  private nearKeys = new Set<string>();
   walkers: Walker[] = [];
   carriages: Carriage[] = [];
   mills: { obj: THREE.Group; speed: number }[] = [];
@@ -672,6 +674,7 @@ export class World {
     this.stats.trees = items.filter((i) => i.kind === 'round' || i.kind === 'conifer').length;
     const set = buildNature(items, this.rng);
     this.natureTiles = set.tiles;
+    this.natureFar = set.far;
     this.scene.add(set.group);
     const hedges = createHedges(this.ctx.hedges as HedgeSeg[]);
     const flowers = createFlowers(this.ctx.flowers as FlowerSpec[]);
@@ -1073,7 +1076,54 @@ export class World {
     (this.clouds.material as THREE.MeshStandardMaterial).color.copy(mix3(0x1a2033, 0xffc9a0, 0xffffff));
   }
 
+  /**
+   * Per-layer submission cost for the F3 overlay. Counts only what the camera
+   * would actually submit: visible meshes whose bounding sphere is in frustum.
+   */
+  debugLayers(camera: THREE.Camera): { name: string; calls: number; tris: number }[] {
+    const frustum = new THREE.Frustum().setFromProjectionMatrix(
+      new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse),
+    );
+    const sphere = new THREE.Sphere();
+    const count = (name: string, roots: THREE.Object3D[]) => {
+      let calls = 0;
+      let tris = 0;
+      for (const root of roots) {
+        root.traverse((o) => {
+          const m = o as THREE.Mesh;
+          if (!m.isMesh || !m.visible) return;
+          let vis = true;
+          for (let p: THREE.Object3D | null = m; p && vis; p = p.parent) if (!p.visible) vis = false;
+          if (!vis) return;
+          const g = m.geometry as THREE.BufferGeometry;
+          if (m.frustumCulled) {
+            if (!g.boundingSphere) g.computeBoundingSphere();
+            sphere.copy(g.boundingSphere!).applyMatrix4(m.matrixWorld);
+            if (!frustum.intersectsSphere(sphere)) return;
+          }
+          const tri = g.index ? g.index.count / 3 : (g.attributes.position?.count ?? 0) / 3;
+          const n = (m as THREE.InstancedMesh).isInstancedMesh ? (m as THREE.InstancedMesh).count : 1;
+          calls += 1;
+          tris += tri * n;
+        });
+      }
+      return { name, calls, tris };
+    };
+    const natureRoots: THREE.Object3D[] = this.natureTiles.filter((t) => t.lod === 0).map((t) => t.near);
+    if (this.natureFar) natureRoots.push(...this.natureFar.meshes);
+    return [
+      count('settlements', this.settlements.map((s) => s.group)),
+      count('wilderness', this.wilderness.map((w) => w.group)),
+      count('roads', [this.roadsGroup]),
+      count('nature', natureRoots),
+      count('props', [this.propsGroup]),
+    ].filter((l) => l.calls > 0);
+  }
+
+  /** Shadow cascades are capped: past ~160 m the extra casters cost more than
+   *  the shadow is worth, and distant people/props use blob shadows. */
   updateSunShadow(center: THREE.Vector3, radius: number) {
+    radius = Math.min(radius, 160);
     this.sun.position.copy(center).addScaledVector(this.lightDir, 320);
     this.sun.target.position.copy(center);
     const cam = this.sun.shadow.camera;
@@ -1230,19 +1280,39 @@ export class World {
         for (const m of s.meshes) m.castShadow = sh;
       }
     }
+    // LOD with hysteresis: a camera hovering on a threshold used to flip the
+    // whole tile every frame. The margin only has to absorb sub-tile movement.
+    const nearR = 2400 * vs;
+    const farR = 9500 * vs;
+    const HYST = 1.08;
+    let nearSetChanged = false;
+    const nearKeys = this.nearKeys;
+    const TILE = 1200;
     for (const t of this.natureTiles) {
       const d = Math.hypot(cam.x - t.cx, cam.z - t.cz);
-      const lod: 0 | 1 | 2 = d < 2400 * vs ? 0 : d < 9500 * vs ? 1 : 2;
-      if (lod !== t.lod) {
-        t.lod = lod;
-        t.near.visible = lod === 0;
-        t.far.visible = lod === 1;
+      const inA = t.lod === 0 ? nearR * HYST : nearR / HYST;
+      const inB = t.lod <= 1 ? farR * HYST : farR / HYST;
+      const lod: 0 | 1 | 2 = d < inA ? 0 : d < inB ? 1 : 2;
+      if (lod !== t.lod) t.lod = lod;
+      const nearVisible = lod === 0;
+      if (t.near.visible !== nearVisible) t.near.visible = nearVisible;
+      const key = `${Math.round(t.cx / TILE)},${Math.round(t.cz / TILE)}`;
+      if (nearVisible) {
+        if (!nearKeys.has(key)) { nearKeys.add(key); nearSetChanged = true; }
+      } else if (nearKeys.has(key)) {
+        nearKeys.delete(key);
+        nearSetChanged = true;
       }
       const sh = d < 1500;
       if (sh !== t.shadow) {
         t.shadow = sh;
         for (const m of t.casters) m.castShadow = sh;
       }
+    }
+    // The far batch is the complement of the near bubble, so it is rebuilt only
+    // when a tile crosses in or out — a few times a minute, not every frame.
+    if (nearSetChanged) {
+      this.natureFar?.update((x, z) => nearKeys.has(`${Math.round(x / TILE)},${Math.round(z / TILE)}`));
     }
     this.updateLights(cam);
 

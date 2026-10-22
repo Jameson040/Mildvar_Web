@@ -23,11 +23,20 @@ const PRESETS: Record<Quality, Preset> = {
   ultra: { dpr: 1.75, shadow: 3072, samples: 4, view: 1.2 },
 };
 
+export interface LayerCost {
+  name: string;
+  calls: number;
+  tris: number;
+}
+
 export interface FrameStats {
   fps: number;
   calls: number;
   triangles: number;
   chunks: number;
+  /** per-layer draw-call / triangle budget, only filled while the F3 overlay is on */
+  layers?: LayerCost[];
+  ms?: number;
 }
 
 export class Engine {
@@ -43,6 +52,8 @@ export class Engine {
   tilt = true;
   quality: Quality = 'balanced';
   onStats?: (s: FrameStats) => void;
+  /** F3 performance overlay: per-layer draw calls and triangles. */
+  showDebug = false;
   private frames = 0;
   private fpsTime = 0;
 
@@ -175,6 +186,8 @@ export class Engine {
           calls: info.calls,
           triangles: info.triangles,
           chunks: this.world.terrain.loadedChunks,
+          layers: this.showDebug ? this.world.debugLayers(this.camera) : undefined,
+          ms: Math.round((this.fpsTime / Math.max(1, this.frames)) * 10000) / 10,
         });
         this.frames = 0;
         this.fpsTime = 0;

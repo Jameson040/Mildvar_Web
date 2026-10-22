@@ -180,10 +180,12 @@ function visibleNature(camX: number, camZ: number) {
       const trees = treesInTile(tx + i, tz + j);
       if (trees < 1) continue;
       const near = d < NEAR_R;
+      // far trees now come from 3 world-wide instanced meshes, not per tile
       if (near) { nearTiles++; nearTrees += trees; calls += perTileCalls.callsNear; }
-      else { farTiles++; farTrees += trees; calls += perTileCalls.callsFar; }
+      else { farTiles++; farTrees += trees; }
     }
   }
+  calls += 3;
   return {
     calls,
     tris: nearTrees * TREE_TRI_NEAR + farTrees * TREE_TRI_FAR,
@@ -210,7 +212,7 @@ const report = viewpoints.map((v) => {
   const nat = visibleNature(v.x, v.z);
   const layers: Record<string, LayerStat> = {
     ...fixed,
-    [`nature (${nat.nearTiles} near + ${nat.farTiles} far tiles)`]: { calls: nat.calls, tris: nat.tris },
+    [`nature (${nat.nearTiles} near tiles + 3 far batches)`]: { calls: nat.calls, tris: nat.tris },
   };
   const total = Object.values(layers).reduce((a, l) => ({ calls: a.calls + l.calls, tris: a.tris + l.tris }), { calls: 0, tris: 0 });
   return { name: v.name, layers, total, nat };

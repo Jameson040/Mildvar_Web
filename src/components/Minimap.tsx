@@ -203,15 +203,20 @@ export const Minimap: React.FC<MinimapProps> = ({ engineRef, onOpenFullMap, wate
       }
 
       // player
+      // `yaw` here is a compass bearing: atan2(forward.x, -forward.z), i.e.
+      // clockwise from north. On a north-up canvas north is -90°, and canvas
+      // rotate() is clockwise, so the arrow rotates by +yaw and the view cone
+      // is centred on yaw - 90°. (The old code negated both, mirroring the
+      // pointer left/right.)
       ctx.save();
       ctx.translate(center, center);
       ctx.fillStyle = 'rgba(255,230,140,0.22)';
       ctx.beginPath();
       ctx.moveTo(0, 0);
-      ctx.arc(0, 0, 36, -yaw - Math.PI / 2 - 0.42, -yaw - Math.PI / 2 + 0.42);
+      ctx.arc(0, 0, 36, yaw - Math.PI / 2 - 0.42, yaw - Math.PI / 2 + 0.42);
       ctx.closePath();
       ctx.fill();
-      ctx.rotate(-yaw);
+      ctx.rotate(yaw);
       ctx.fillStyle = '#4ade80';
       ctx.strokeStyle = '#fff';
       ctx.lineWidth = 1.5;

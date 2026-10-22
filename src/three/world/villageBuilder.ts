@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { Collector, box, mat4 } from '../geometry';
 import { RNG, range, pick } from '../noise';
-import { addHouse, randomHouseOpts, houseDoorX, addChurch, addTownHall, addMarketStall, addLamp, addFountain, addWell, addYard, Obb } from '../buildings';
+import { addHouse, randomHouseOpts, houseDoorX, addChurch, addTownHall, addMarketStall, addLamp, addFountain, addWell, addYard, HOUSE_TITLE, wingBox, clampHouseFrontage, Obb, HouseOpts } from '../buildings';
 import {
   addBarn, addLonghouse, addKeep, addFlag, addStoneCircle, addRuins, addWatchtower, addWindmill,
   addDock, addBoat, addHaystack, addFence, addCrateCluster, addSignpost, addTrough, addWoodpile,
@@ -222,6 +222,23 @@ function addHouseFrontage(ctx: BuildCtx, o: Obb, opts: ReturnType<typeof randomH
   // doorstep at the threshold
   ctx.c.add('stone', box(1.9, 0.16, 0.65), base.clone().multiply(mat4(doorX, 0.08, opts.d / 2 + 0.22)), 0xbdb3a2);
 }
+
+/**
+ * Push the collision boxes for a house: the ground-floor block, plus the manor
+ * cross wing when there is one (the only thing that projects at ground level).
+ */
+function pushHouseObbs(ctx: BuildCtx, opts: HouseOpts, x: number, z: number, rot: number): Obb {
+  const main: Obb = { cx: x, cz: z, hw: opts.w / 2, hd: opts.d / 2, rot };
+  const wing = wingBox(opts);
+  if (wing) {
+    const p = localPoint({ x, z, rot }, wing.x, opts.d / 2 + wing.d / 2);
+    ctx.obbs.push(main, { cx: p.x, cz: p.z, hw: wing.w / 2, hd: wing.d / 2, rot });
+  } else {
+    ctx.obbs.push(main);
+  }
+  return main;
+}
+
 function angDist(a: number, b: number) {
   const d = Math.abs(a - b) % (Math.PI * 2);
   return d > Math.PI ? Math.PI * 2 - d : d;
@@ -437,7 +454,6 @@ export function buildVillage(v: VillageDef, plan: VillagePlan, ctx: BuildCtx) {
   let houseDoor = 0;
   while (a < Math.PI * 2 && guard++ < 200) {
     const opts = randomHouseOpts(rng, t.scale * 0.95, t);
-    opts.ridgeAlongFront = rng() < 0.8;
     const R = ringR + opts.d / 2;
     const x = v.x + Math.cos(a) * R;
     const z = v.z + Math.sin(a) * R * 0.95;
@@ -449,11 +465,11 @@ export function buildVillage(v: VillageDef, plan: VillagePlan, ctx: BuildCtx) {
     if (ellipse < 1.32 && houseFits(o, ctx, gap, v)) {
       const gy = groundAt(o);
       addHouse(c, mat4(x, gy - 0.05, z, rot), opts, rng);
-      ctx.obbs.push(o);
+      pushHouseObbs(ctx, opts, x, z, rot);
       addHouseFrontage(ctx, o, opts, gap);
       garden(ctx, mat4(x, gy, z, rot), rot, opts, gap);
       if (houseDoor % 3 === 0) {
-        addDoor(`door_house_${v.id}_${houseDoor}`, `${v.name} Cottage`, x, gy - 0.05, z, rot, opts.d / 2 + 0.45, 'cottage', houseDoorX(opts.w));
+        addDoor(`door_house_${v.id}_${houseDoor}`, `${v.name} ${HOUSE_TITLE[opts.type]}`, x, gy - 0.05, z, rot, opts.d / 2 + 0.45, 'cottage', houseDoorX(opts.w));
       }
       houseDoor++;
     }
@@ -479,13 +495,14 @@ export function buildVillage(v: VillageDef, plan: VillagePlan, ctx: BuildCtx) {
         const dRoad = frontage(o, opts.w, opts.d);
         const gap = Math.max(0.8, dRoad + 0.7);
         if (Math.hypot(x - v.x, z - v.z) < v.r * 1.4 && dRoad > 0.6 && dRoad < 6.3 && houseFits(o, ctx, gap, v)) {
+          clampHouseFrontage(opts, dRoad);
           const gy = groundAt(o);
           addHouse(c, mat4(x, gy - 0.05, z, rot), opts, rng);
-          ctx.obbs.push(o);
+          pushHouseObbs(ctx, opts, x, z, rot);
           addHouseFrontage(ctx, o, opts, gap);
           garden(ctx, mat4(x, gy, z, rot), rot, opts, gap);
           if (houseDoor % 3 === 0) {
-            addDoor(`door_house_${v.id}_${houseDoor}`, `${v.name} Cottage`, x, gy - 0.05, z, rot, opts.d / 2 + 0.45, 'cottage', houseDoorX(opts.w));
+            addDoor(`door_house_${v.id}_${houseDoor}`, `${v.name} ${HOUSE_TITLE[opts.type]}`, x, gy - 0.05, z, rot, opts.d / 2 + 0.45, 'cottage', houseDoorX(opts.w));
           }
           houseDoor++;
           if (rng() < 0.14) {
@@ -518,9 +535,10 @@ export function buildVillage(v: VillageDef, plan: VillagePlan, ctx: BuildCtx) {
     const dRoad = frontage(o, opts.w, opts.d);
     const gap = Math.max(0.9, dRoad + 0.7);
     if (dRoad < 0.7 || dRoad > 6.5 || !houseFits(o, ctx, gap, v)) continue;
+    clampHouseFrontage(opts, dRoad);
     const gy = groundAt(o);
     addHouse(c, mat4(x, gy - 0.05, z, rot), opts, rng);
-    ctx.obbs.push(o);
+    pushHouseObbs(ctx, opts, x, z, rot);
     addHouseFrontage(ctx, o, opts, gap);
     garden(ctx, mat4(x, gy, z, rot), rot, opts, gap);
     if (rng() < 0.45) {
@@ -651,12 +669,12 @@ export function buildFarm(f: FarmDef, v: VillageDef, ctx: BuildCtx) {
   const { c, rng } = ctx;
   const local = (lx: number, lz: number) => localPoint(f, lx, lz);
 
-  const opts = randomHouseOpts(rng, 0.95, v.theme);
+  const opts = randomHouseOpts(rng, 0.95, v.theme, 'longhouse');
   const h = local(-12, 7);
   const hrot = f.rot + Math.PI;
   const ho: Obb = { cx: h.x, cz: h.z, hw: opts.w / 2, hd: opts.d / 2, rot: hrot };
   addHouse(c, mat4(h.x, groundAt(ho) - 0.05, h.z, hrot), opts, rng);
-  ctx.obbs.push(ho);
+  pushHouseObbs(ctx, opts, h.x, h.z, hrot);
 
   const b = local(12, 7);
   const bo = addBarn(c, mat4(b.x, terrainHeight(b.x, b.z) - 0.1, b.z, hrot + 0.08), v.theme.roofMat, rng);

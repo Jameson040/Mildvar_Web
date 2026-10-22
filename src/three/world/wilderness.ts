@@ -76,7 +76,7 @@ export function buildLakeEldermere(ctx: WildernessCtx) {
     shutters: [0x3d6b4f],
     styles: { stone: 0.5, plaster: 0.2, timber: 0.3 },
     floorsMax: 1,
-  });
+  }, 'cottage');
   const lodgeRot = Math.PI * 0.9;
   addHouse(c, mat4(shoreX + 22, shoreY - 0.05, shoreZ + 14, lodgeRot), lodgeOpts, rng);
   ctx.obbs.push({ cx: shoreX + 22, cz: shoreZ + 14, hw: lodgeOpts.w / 2, hd: lodgeOpts.d / 2, rot: lodgeRot });
@@ -115,7 +115,7 @@ export function buildWhisperingWeald(ctx: WildernessCtx) {
     shutters: [0x4a3a2a],
     styles: { stone: 0.3, plaster: 0.1, timber: 0.6 },
     floorsMax: 1,
-  });
+  }, 'longhouse');
   const cabinRot = 0.55;
   addHouse(c, mat4(wx, wy - 0.05, wz, cabinRot), cabinOpts, rng);
   ctx.obbs.push({ cx: wx, cz: wz, hw: cabinOpts.w / 2, hd: cabinOpts.d / 2, rot: cabinRot });
@@ -430,7 +430,7 @@ export function buildGoldenMeadow(ctx: WildernessCtx) {
     shutters: [0x5c7a3a],
     styles: { stone: 0.7, plaster: 0.2, timber: 0.1 },
     floorsMax: 1,
-  });
+  }, 'cottage');
   addHouse(c, mat4(mx, my - 0.05, mz, 0.8), shepOpts, rng);
   ctx.obbs.push({ cx: mx, cz: mz, hw: shepOpts.w / 2, hd: shepOpts.d / 2, rot: 0.8 });
   ctx.interactions.registerDoor({
@@ -491,7 +491,7 @@ export function buildWatchtower(ctx: WildernessCtx, site: WatchtowerSpec) {
 
   // Watchtower Structure
   addWatchtower(c, mat4(wx, wy, wz, site.rot));
-  ctx.obbs.push({ cx: wx, cz: wz, hw: 3.6, hd: 3.6, rot: site.rot });
+  ctx.obbs.push({ cx: wx, cz: wz, hw: 4.8, hd: 4.8, rot: site.rot });
 
   // Guard Station Tent & Campfire
   const tentX = wx - Math.sin(site.rot) * 11;

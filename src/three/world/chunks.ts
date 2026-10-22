@@ -327,32 +327,80 @@ function ribbonMesh(positions: number[], uv: number[], indices: number[], materi
   return mesh;
 }
 
-/** Road cross-section: visible paving, two earth verges, and kind-specific wear. */
+/* ---- small geometry accumulators used by the road builder ---- */
+interface Buf {
+  pos: number[];
+  uv: number[];
+  col: number[];
+  idx: number[];
+}
+const newBuf = (): Buf => ({ pos: [], uv: [], col: [], idx: [] });
+const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1);
+const _v = new THREE.Vector3();
+const boxM = (x: number, y: number, z: number, sx: number, sy: number, sz: number) =>
+  new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), new THREE.Quaternion(), new THREE.Vector3(sx, sy, sz));
+
+/** Append a coloured box (used for milestones) into an accumulator. */
+function pushBox(b: Buf, m: THREE.Matrix4, color: THREE.Color) {
+  const p = UNIT_BOX.attributes.position;
+  const base = b.pos.length / 3;
+  for (let i = 0; i < p.count; i++) {
+    _v.set(p.getX(i), p.getY(i), p.getZ(i)).applyMatrix4(m);
+    b.pos.push(_v.x, _v.y, _v.z);
+    b.uv.push(_v.x * 0.35, _v.y * 0.35);
+    b.col.push(color.r, color.g, color.b);
+  }
+  const index = UNIT_BOX.index!;
+  for (let i = 0; i < index.count; i++) b.idx.push(base + index.getX(i));
+}
+
+/**
+ * Road cross-section, improved:
+ *   paving with a crowned centre and mottled wear · a pale gravel shoulder ·
+ *   a grassy outer verge · kerb setts in towns and a grass median on tracks ·
+ *   wheel ruts on country roads · roadside milestones on the highways.
+ */
 export function createRoadMeshes(tex: TextureSet, list: Road[]) {
   const group = new THREE.Group();
   const po = { polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 };
+  // overlays that sit on top of the paving win the depth test outright, so the
+  // crown and the ruts can never flicker against the road surface
+  const poTop = { polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -6 };
+  const vc = { vertexColors: true, ...po };
   const mats: Record<RoadKind, THREE.Material> = {
-    cobble: new THREE.MeshStandardMaterial({ map: tex.cobble, roughness: 0.94, ...po }),
-    dirt: new THREE.MeshStandardMaterial({ map: tex.dirt, roughness: 1, ...po }),
-    track: new THREE.MeshStandardMaterial({ map: tex.dirt, color: 0xc8b796, roughness: 1, ...po }),
+    cobble: new THREE.MeshStandardMaterial({ map: tex.cobble, roughness: 0.94, ...vc }),
+    dirt: new THREE.MeshStandardMaterial({ map: tex.dirt, roughness: 1, ...vc }),
+    track: new THREE.MeshStandardMaterial({ map: tex.dirt, color: 0xc8b796, roughness: 1, ...vc }),
   };
   const vergeMat = new THREE.MeshStandardMaterial({ map: tex.dirt, vertexColors: true, roughness: 1, ...po });
-  const curbMat = new THREE.MeshStandardMaterial({ map: tex.stone, color: 0xc9bca4, roughness: 1, ...po });
-  const rutMat = new THREE.MeshStandardMaterial({ map: tex.dirt, color: 0x705d4c, roughness: 1, ...po });
-  const innerColor = new THREE.Color(0xe9d8b6);
-  const outerColor = new THREE.Color(0x9cae83);
+  const curbMat = new THREE.MeshStandardMaterial({ map: tex.stone, vertexColors: true, roughness: 0.95, ...poTop });
+  const rutMat = new THREE.MeshStandardMaterial({ map: tex.dirt, color: 0x6f5c4a, roughness: 1, ...poTop });
+  const postMat = new THREE.MeshStandardMaterial({ map: tex.stone, vertexColors: true, roughness: 0.95, ...po });
+  const grass = new THREE.Color(0x7c9459);
+  const gravelCol = new THREE.Color(0xd3c8ae);
+  const edgeCol = new THREE.Color(0xe4d8bb);
+  const postStone = new THREE.Color(0xb8b2a4);
+  const postPaint = new THREE.Color(0xe9e4d6);
+  const tint = new THREE.Color();
   const PIECE = 60;
 
   list.forEach((road, roadIndex) => {
     const smp = road.samples;
     const half = road.width / 2;
-    const shoulder = half + (road.kind === 'cobble' ? 1.15 : 1.7);
-    const lift = (road.kind === 'cobble' ? 0.22 : 0.18) + (roadIndex % 5) * 0.008;
+    const cobble = road.kind === 'cobble';
+    const shoulder = half + (cobble ? 1.15 : 1.7);
+    const lift = (cobble ? 0.22 : 0.18) + (roadIndex % 5) * 0.008;
+    const rutOffset = road.width * 0.23;
+    // milestones: highways only, roughly every 160 m, first one offset so the
+    // posts of neighbouring roads never line up
+    let nextPost = road.kind === 'track' ? 1e9 : 110 + (roadIndex % 4) * 35;
+
     for (let start = 0; start < smp.length - 1; start += PIECE) {
       const end = Math.min(smp.length - 1, start + PIECE);
       const surface: number[] = [];
       const surfaceUV: number[] = [];
       const surfaceIdx: number[] = [];
+      const surfaceCol: number[] = [];
       const verge: number[] = [];
       const vergeUV: number[] = [];
       const vergeColors: number[] = [];
@@ -360,6 +408,15 @@ export function createRoadMeshes(tex: TextureSet, list: Road[]) {
       const detail: number[] = [];
       const detailUV: number[] = [];
       const detailIdx: number[] = [];
+      const kerb: number[] = [];
+      const kerbUV: number[] = [];
+      const kerbColors: number[] = [];
+      const kerbIdx: number[] = [];
+      const median: number[] = [];
+      const medianUV: number[] = [];
+      const medianColors: number[] = [];
+      const medianIdx: number[] = [];
+      const posts = newBuf();
       const onBridge: boolean[] = [];
 
       for (let i = start; i <= end; i++) {
@@ -384,59 +441,152 @@ export function createRoadMeshes(tex: TextureSet, list: Road[]) {
         const rightZ = a.z - nz * half;
         const leftY = bridge ? a.y + lift : Math.max(a.y + lift, terrainHeight(leftX, leftZ) + 0.18);
         const rightY = bridge ? a.y + lift : Math.max(a.y + lift, terrainHeight(rightX, rightZ) + 0.18);
-        surface.push(leftX, leftY, leftZ, rightX, rightY, rightZ);
-        surfaceUV.push(a.s / 4.3, 0, a.s / 4.3, road.width / 4.3);
+        // crowned centre so water runs to the gutters and the surface catches light
+        const crownY = (leftY + rightY) / 2 + (bridge ? 0.02 : 0.045);
+        // height of the paved section at signed offset d from the centre line,
+        // including the crown — kerbs, ruts and medians all sit on this
+        const surfY = (d: number) =>
+          rightY + ((d + half) / (half * 2)) * (leftY - rightY) + (bridge ? 0.02 : 0.045) * (1 - Math.min(1, Math.abs(d) / half));
+        const midX = (leftX + rightX) / 2;
+        const midZ = (leftZ + rightZ) / 2;
+        surface.push(leftX, leftY, leftZ, midX, crownY, midZ, rightX, rightY, rightZ);
+        surfaceUV.push(a.s / 4.3, 0, a.s / 4.3, half / 4.3, a.s / 4.3, (half * 2) / 4.3);
+        // wear: patches of pale dust and darker damp, drifting along the road
+        const mottle = 0.82 + 0.2 * (0.5 + 0.5 * Math.sin(a.s * 0.09 + roadIndex * 2.3));
+        const damp = 0.5 + 0.5 * Math.sin(a.s * 0.037 + roadIndex * 1.1);
+        tint.setRGB(mottle * (1 - damp * 0.1), mottle * (1 - damp * 0.07), mottle * (1 - damp * 0.02));
+        surfaceCol.push(tint.r * 0.88, tint.g * 0.87, tint.b * 0.86,
+          tint.r, tint.g, tint.b,
+          tint.r * 0.88, tint.g * 0.87, tint.b * 0.86);
 
-        // Two verges, not a full-width plane under the paving. The outer
-        // vertices blend to field green and the inner vertices to packed earth.
-        const leftOuterX = a.x + nx * shoulder;
-        const leftOuterZ = a.z + nz * shoulder;
-        const rightOuterX = a.x - nx * shoulder;
-        const rightOuterZ = a.z - nz * shoulder;
-        const leftOuterY = terrainHeight(leftOuterX, leftOuterZ) + 0.07;
-        const rightOuterY = terrainHeight(rightOuterX, rightOuterZ) + 0.07;
-        verge.push(leftOuterX, leftOuterY, leftOuterZ, leftX, leftY - 0.025, leftZ,
-          rightX, rightY - 0.025, rightZ, rightOuterX, rightOuterY, rightOuterZ);
-        vergeUV.push(a.s / 6, 0, a.s / 6, 0.27, a.s / 6, 0.27, a.s / 6, 0);
-        vergeColors.push(outerColor.r, outerColor.g, outerColor.b, innerColor.r, innerColor.g, innerColor.b,
-          innerColor.r, innerColor.g, innerColor.b, outerColor.r, outerColor.g, outerColor.b);
+        // ---- shoulder: pale gravel next to the paving, grass further out
+        const midL = half + (shoulder - half) * 0.34;
+        const gravelY = bridge ? a.y + lift - 0.02 : terrainHeight(a.x + nx * midL, a.z + nz * midL) + 0.12;
+        const outerY = bridge ? a.y + lift - 0.05 : terrainHeight(a.x + nx * shoulder, a.z + nz * shoulder) + 0.07;
+        const gravelRx = a.x - nx * midL;
+        const gravelRz = a.z - nz * midL;
+        const gravelRY = bridge ? a.y + lift - 0.02 : terrainHeight(gravelRx, gravelRz) + 0.12;
+        const outerRx = a.x - nx * shoulder;
+        const outerRz = a.z - nz * shoulder;
+        const outerRY = bridge ? a.y + lift - 0.05 : terrainHeight(outerRx, outerRz) + 0.07;
+        verge.push(
+          a.x + nx * shoulder, outerY, a.z + nz * shoulder,
+          a.x + nx * midL, gravelY, a.z + nz * midL,
+          leftX, leftY - 0.025, leftZ,
+          rightX, rightY - 0.025, rightZ,
+          gravelRx, gravelRY, gravelRz,
+          outerRx, outerRY, outerRz,
+        );
+        vergeUV.push(a.s / 6, 0, a.s / 6, 0.14, a.s / 6, 0.22, a.s / 6, 0.22, a.s / 6, 0.14, a.s / 6, 0);
+        vergeColors.push(
+          grass.r, grass.g, grass.b,
+          gravelCol.r, gravelCol.g, gravelCol.b,
+          edgeCol.r, edgeCol.g, edgeCol.b,
+          edgeCol.r, edgeCol.g, edgeCol.b,
+          gravelCol.r, gravelCol.g, gravelCol.b,
+          grass.r, grass.g, grass.b,
+        );
 
-        // A pale stone curb in town, worn parallel wheel ruts on country roads.
-        const offset = road.kind === 'cobble' ? half - 0.04 : road.width * 0.23;
-        const detailHalf = road.kind === 'cobble' ? 0.13 : 0.18;
-        for (const side of [1, -1]) {
-          const d0 = side > 0 ? offset + detailHalf : -offset + detailHalf;
-          const d1 = side > 0 ? offset - detailHalf : -offset - detailHalf;
-          const extra = road.kind === 'cobble' ? 0.055 : 0.025;
-          const y0 = rightY + ((d0 + half) / (half * 2)) * (leftY - rightY) + extra;
-          const y1 = rightY + ((d1 + half) / (half * 2)) * (leftY - rightY) + extra;
-          detail.push(a.x + nx * d0, y0, a.z + nz * d0, a.x + nx * d1, y1, a.z + nz * d1);
-          detailUV.push(a.s / 3, 0, a.s / 3, 0.3);
+        // ---- town kerb: a raised band of setts, alternating tone
+        if (cobble) {
+          const sett = (i - start) % 2 === 0 ? 1 : 0.84;
+          const kOut = half - 0.03;
+          const kIn = half - 0.36;
+          const kyL = surfY(kOut) + 0.055;
+          const kyLi = surfY(kIn) + 0.075;
+          const kyR = surfY(-kOut) + 0.055;
+          const kyRi = surfY(-kIn) + 0.075;
+          kerb.push(
+            a.x + nx * kOut, kyL, a.z + nz * kOut,
+            a.x + nx * kIn, kyLi, a.z + nz * kIn,
+            a.x - nx * kIn, kyRi, a.z - nz * kIn,
+            a.x - nx * kOut, kyR, a.z - nz * kOut,
+          );
+          kerbUV.push(a.s / 2.2, 0, a.s / 2.2, 0.16, a.s / 2.2, 0.16, a.s / 2.2, 0);
+          for (let q = 0; q < 4; q++) kerbColors.push(sett, sett * 0.97, sett * 0.9);
+        }
+
+        // ---- grass median growing between the wheel ruts of a country track
+        if (road.kind === 'track') {
+          const mw = road.width * 0.14;
+          const myL = surfY(mw) + 0.02;
+          const myR = surfY(-mw) + 0.02;
+          median.push(
+            midX + nx * mw, myL, midZ + nz * mw,
+            midX - nx * mw, myR, midZ - nz * mw,
+          );
+          medianUV.push(a.s / 3, 0, a.s / 3, 0.30);
+          const g = 0.9 + 0.1 * Math.sin(a.s * 0.5);
+          medianColors.push(0.44 * g, 0.55 * g, 0.3 * g, 0.44 * g, 0.55 * g, 0.3 * g);
+        }
+
+        // ---- worn parallel ruts (country roads only: towns have a kerb there)
+        if (!cobble) {
+          for (const side of [1, -1]) {
+            const d0 = side > 0 ? rutOffset + 0.18 : -rutOffset + 0.18;
+            const d1 = side > 0 ? rutOffset - 0.18 : -rutOffset - 0.18;
+            const y0 = surfY(d0) + 0.03;
+            const y1 = surfY(d1) + 0.03;
+            detail.push(a.x + nx * d0, y0, a.z + nz * d0, a.x + nx * d1, y1, a.z + nz * d1);
+            detailUV.push(a.s / 3, 0, a.s / 3, 0.3);
+          }
+        }
+
+        // ---- milestone on the left shoulder
+        if (a.s >= nextPost && !bridge) {
+          nextPost = a.s + 160;
+          const px = a.x + nx * (shoulder + 0.78);
+          const pz = a.z + nz * (shoulder + 0.78);
+          const py = terrainHeight(px, pz);
+          const pm = new THREE.Matrix4().compose(
+            new THREE.Vector3(px, py, pz),
+            new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(nx, nz)),
+            new THREE.Vector3(1, 1, 1),
+          );
+          pushBox(posts, pm.clone().multiply(boxM(0, 0.42, 0, 0.3, 0.84, 0.26)), postStone);
+          pushBox(posts, pm.clone().multiply(boxM(0, 0.88, 0, 0.34, 0.16, 0.3)), postPaint);
         }
 
         if (i < end) {
-          const k = (i - start) * 2;
-          // First vertex is on the left (+normal), then on the right. This
-          // winding faces UP; the old winding faced down and was culled.
-          surfaceIdx.push(k, k + 2, k + 1, k + 1, k + 2, k + 3);
+          // three vertices per row: left, crowned centre, right
+          const k = (i - start) * 3;
+          surfaceIdx.push(k, k + 3, k + 1, k + 1, k + 3, k + 4, k + 1, k + 4, k + 2, k + 2, k + 4, k + 5);
+
         }
       }
 
       for (let i = 0; i < end - start; i++) {
         if (onBridge[i] || onBridge[i + 1]) continue;
-        const k = i * 4;
-        for (const side of [0, 2]) {
-          const a = k + side;
-          vergeIdx.push(a, a + 4, a + 1, a + 1, a + 4, a + 5);
-          detailIdx.push(a, a + 4, a + 1, a + 1, a + 4, a + 5);
+        const vk = i * 6;
+        for (const side of [0, 3]) {
+          for (const s of [0, 1]) {
+            const a = vk + side + s;
+            vergeIdx.push(a, a + 6, a + 1, a + 1, a + 6, a + 7);
+          }
+        }
+        if (!cobble) {
+          const dk = i * 4;
+          for (const side of [0, 2]) {
+            const a = dk + side;
+            detailIdx.push(a, a + 4, a + 1, a + 1, a + 4, a + 5);
+          }
+        }
+        if (cobble) {
+          const kk = i * 4;
+          kerbIdx.push(kk, kk + 4, kk + 1, kk + 1, kk + 4, kk + 5, kk + 2, kk + 6, kk + 3, kk + 3, kk + 6, kk + 7);
+        }
+        if (road.kind === 'track') {
+          const mk = i * 2;
+          medianIdx.push(mk, mk + 2, mk + 1, mk + 1, mk + 2, mk + 3);
         }
       }
 
-      group.add(ribbonMesh(surface, surfaceUV, surfaceIdx, mats[road.kind]));
-      if (vergeIdx.length) {
-        group.add(ribbonMesh(verge, vergeUV, vergeIdx, vergeMat, vergeColors));
-        group.add(ribbonMesh(detail, detailUV, detailIdx, road.kind === 'cobble' ? curbMat : rutMat));
-      }
+      group.add(ribbonMesh(surface, surfaceUV, surfaceIdx, mats[road.kind], surfaceCol));
+      if (vergeIdx.length) group.add(ribbonMesh(verge, vergeUV, vergeIdx, vergeMat, vergeColors));
+      if (detailIdx.length) group.add(ribbonMesh(detail, detailUV, detailIdx, rutMat));
+      if (kerbIdx.length) group.add(ribbonMesh(kerb, kerbUV, kerbIdx, curbMat, kerbColors));
+      if (medianIdx.length) group.add(ribbonMesh(median, medianUV, medianIdx, vergeMat, medianColors));
+      if (posts.idx.length) group.add(ribbonMesh(posts.pos, posts.uv, posts.idx, postMat, posts.col));
     }
   });
   return group;

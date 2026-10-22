@@ -162,3 +162,66 @@ complete, interiors resolve floor/collision correctly.
 5. Press **J** for the quest journal; **E** on the far door to step back
    outside (you return to the exact doorstep).
 6. Open the map (**M**) — 14 locations, including all five watchtowers.
+
+---
+
+## 7. Round 2 — houses, towers, roads, minimap
+
+**House types.** `buildings.ts` now has a `HouseType` union and a shape table:
+
+| Type | Silhouette | Where it shows up |
+| --- | --- | --- |
+| `cottage` | 1–2 storeys, low eaves, thick plinth, ivy | everywhere, all rural extras |
+| `townhouse` | narrow, 2–3 storeys, **jettied** upper floors, gable to the street | towns, lanes |
+| `longhouse` | long and low, ridge to the frontage, carved door posts, smoke louvre, rear **lean-to outshot** | farms, forest cabins |
+| `hall` | 3.4 m storeys, stone, hipped roof, dormer row, corner buttresses, **stair turret** | squares, market lanes |
+| `workshop` | arched shop front, wide glazing, **hanging sign**, wide double door | lanes |
+| `manor` | cross wing with its own gable, columned **portico**, turret, tall chimney stacks | large villages |
+
+`randomHouseOpts()` picks the type from the theme's `floorsMax`, then derives
+`w/d/floors/jetty/wing/porch/…`. Door titles come from `HOUSE_TITLE`, so the
+prompt in Mildvar reads "Mildvar Guild Hall", "Norvik Townhouse", etc.
+Collision uses the ground-floor block; the manor cross wing is the only
+ground-level projection and gets its own box from `wingBox()` so the builder
+and the collision layer can never disagree.
+
+**Watchtower.** Rebuilt in `structures.ts`: battered plinth with a footing,
+two-stage shaft with a string course, twelve arrow slits, upper windows with
+linters, a corbelled parapet over a **timber hoarding**, twelve merlons, a
+shingle cone with a gilded finial, an east **stair turret**, a projecting
+**forebuilding** with an arched, iron-banded door and steps, a banner and
+weather staining. 24 m to the finial (was 16 m). Footprint is still driven by
+`{hw, hd}`; the wilderness OBB grew 3.6 → 4.8 m.
+
+**Roads.** `createRoadMeshes` now emits:
+* a **three-vertex cross-section** with a crowned centre, so the paving catches
+  light instead of reading as a flat ribbon;
+* per-vertex **wear** (pale dust / darker damp drifting along the road) on all
+  three road materials;
+* a pale **gravel shoulder** strip between the paving and the grassy verge;
+* a raised band of **kerb setts** with alternating tone in towns (the old
+  cobble "curb" detail is gone — it z-fought the new kerb);
+* a **grass median** between the wheel ruts on country tracks;
+* **milestones** every ~160 m on the highways (two-box posts, stone body with
+  a painted cap).
+
+`roadQuery()` is untouched, so the +35 % on-road stroll speed and every verify
+check behave exactly as before.
+
+**Minimap.** The player arrow was mirrored: `yaw` from `atan2(dir.x, -dir.z)` is
+already a clockwise compass bearing and the canvas is north-up, so both the
+arrow and the view cone must rotate by `+yaw` and be centred on `yaw − 90°`.
+The old code used `-yaw` for both, which pointed the pointer left of travel.
+Fixed in `Minimap.tsx`.
+
+### Offline previews
+
+No browser is available in the build sandbox, so the geometry is rendered with a
+tiny software rasteriser (`scripts/render-catalog.ts`, `scripts/render-roads.ts`):
+
+```bash
+npm run render:houses    # docs/house-catalog.png   — 3/4 views of all six types + the tower
+npm run render:fronts    # docs/house-fronts.png    — street elevations
+npm run render:village   # docs/village-view.png    — a real village built by buildVillage()
+npm run render:roads     # docs/road-cross-sections.png — cobble lane + country road
+```

@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "verify": "npx --yes tsx@4 scripts/verify-world.ts"
+    "verify": "npx --yes tsx@4 scripts/verify-world.ts",
+    "render:houses": "npx --yes tsx@4 scripts/render-catalog.ts",
+    "render:fronts": "FRONT=1 npx --yes tsx@4 scripts/render-catalog.ts",
+    "render:village": "VILLAGE=1 npx --yes tsx@4 scripts/render-catalog.ts",
+    "render:roads": "npx --yes tsx@4 scripts/render-roads.ts"
   },
   "dependencies": {
     "@types/three": "^0.186.0",

@@ -33,7 +33,25 @@ export interface ThemePalette {
   roofMat: string;
 }
 
+export type HouseType = 'cottage' | 'townhouse' | 'longhouse' | 'hall' | 'workshop' | 'manor';
+
+/** Human labels used by the door/interaction layer. */
+export const HOUSE_TITLE: Record<HouseType, string> = {
+  cottage: 'Cottage',
+  townhouse: 'Townhouse',
+  longhouse: 'Longhouse',
+  hall: 'Guild Hall',
+  workshop: 'Workshop',
+  manor: 'Manor House',
+};
+
+/**
+ * One house. `w`/`d` describe the ground-floor block; the yard, the door and
+ * the collision box are all derived from it. Only `wing` projects at ground
+ * level and it is accounted for separately (see `wingBox`).
+ */
 export interface HouseOpts {
+  type: HouseType;
   w: number;
   d: number;
   floors: number;
@@ -48,42 +66,141 @@ export interface HouseOpts {
   shutters: boolean;
   shutterColor: number;
   ivy: boolean;
+  /** upper-floor overhang, per storey (m) */
+  jetty: number;
+  /** projecting cross-gable wing on the street front (m) */
+  /** which side of the facade the cross wing sits on (-1 or +1) */
+  wing: number;
+  wingX: number;
+  /** projecting columned entrance porch */
+  porch: boolean;
+  /** arched shop front, wide glazing and a hanging sign */
+  shopfront: boolean;
+  /** rear corner stair turret */
+  turret: boolean;
+  /** lean-to outshot on the rear elevation */
+  outshot: boolean;
 }
 
-export function randomHouseOpts(rng: RNG, scale = 1, theme?: ThemePalette): HouseOpts {
+interface TypeShape {
+  w: [number, number];
+  d: [number, number];
+  floorH: number;
+  pitch: number;
+  maxFloors: number;
+  floorTable: number[];
+}
+
+const SHAPES: Record<HouseType, TypeShape> = {
+  cottage: { w: [5.6, 8.2], d: [5.0, 7.0], floorH: 3.0, pitch: 0.95, maxFloors: 2, floorTable: [1, 1, 2] },
+  townhouse: { w: [4.8, 6.4], d: [6.2, 8.2], floorH: 2.95, pitch: 1.25, maxFloors: 3, floorTable: [2, 2, 3] },
+  longhouse: { w: [9.6, 13.0], d: [6.2, 7.8], floorH: 2.85, pitch: 0.62, maxFloors: 1, floorTable: [1] },
+  hall: { w: [10.0, 13.0], d: [8.0, 9.8], floorH: 3.4, pitch: 0.8, maxFloors: 2, floorTable: [2] },
+  workshop: { w: [6.4, 8.6], d: [5.8, 7.2], floorH: 3.1, pitch: 0.95, maxFloors: 2, floorTable: [1, 2, 2] },
+  manor: { w: [12.0, 15.5], d: [8.6, 10.6], floorH: 3.4, pitch: 0.8, maxFloors: 3, floorTable: [2, 2, 3] },
+};
+
+function chooseType(rng: RNG, maxF: number): HouseType {
+  const r = rng();
+  if (maxF >= 3) {
+    if (r < 0.24) return 'cottage';
+    if (r < 0.44) return 'townhouse';
+    if (r < 0.58) return 'longhouse';
+    if (r < 0.70) return 'workshop';
+    if (r < 0.87) return 'hall';
+    return 'manor';
+  }
+  if (r < 0.32) return 'cottage';
+  if (r < 0.48) return 'townhouse';
+  if (r < 0.66) return 'longhouse';
+  if (r < 0.84) return 'workshop';
+  if (r < 0.93) return 'hall';
+  return 'manor';
+}
+
+export function randomHouseOpts(rng: RNG, scale = 1, theme?: ThemePalette, forced?: HouseType): HouseOpts {
   const pal: ThemePalette = theme ?? PALETTE;
-  const roll = rng();
   const st = pal.styles;
-  const style: HouseOpts['style'] = roll < st.stone ? 'stone' : roll < st.stone + st.plaster ? 'plaster' : 'timber';
   const maxF = Math.max(1, pal.floorsMax);
-  const fr = rng();
-  let floors = maxF >= 3 ? (fr < 0.6 ? 2 : fr < 0.78 ? 1 : 3) : maxF === 2 ? (fr < 0.68 ? 1 : 2) : 1;
-  if (maxF < floors) floors = maxF;
+  const type = forced ?? chooseType(rng, maxF);
+  const sh = SHAPES[type];
+
+  const roll = rng();
+  let style: HouseOpts['style'] = roll < st.stone ? 'stone' : roll < st.stone + st.plaster ? 'plaster' : 'timber';
+  // A timber townhouse is the archetype; a stone manor is not timber.
+  if (type === 'townhouse' && style === 'stone' && rng() < 0.55) style = 'timber';
+  if (type === 'manor' || type === 'hall') style = rng() < 0.72 ? 'stone' : 'plaster';
+  if (type === 'workshop') style = rng() < 0.5 ? 'timber' : 'plaster';
+  if (type === 'longhouse') style = rng() < 0.6 ? 'timber' : 'plaster';
+
+  const floors = Math.max(1, Math.min(pick(rng, sh.floorTable), sh.maxFloors, maxF));
+  const w = range(rng, sh.w[0], sh.w[1]) * scale;
+  const d = range(rng, sh.d[0], sh.d[1]) * scale;
+
+  const jetty = type === 'townhouse' && floors >= 2 ? range(rng, 0.24, 0.34) : 0;
+  const wing = type === 'manor' ? range(rng, 1.8, 2.4) : 0;
+  const wingX = wing > 0 ? (rng() < 0.5 ? -1 : 1) : 0;
+  const porch = type === 'manor' && rng() < 0.85;
+  const outshot = type === 'longhouse' && rng() < 0.7;
+
   return {
-    w: range(rng, 6, 10) * scale,
-    d: range(rng, 5.5, 8) * scale,
+    type,
+    w,
+    d,
     floors,
     style,
     roofMat: pal.roofMat,
     roofColor: pick(rng, pal.roofs),
     wallColor: style === 'stone' ? pick(rng, pal.stones) : pick(rng, pal.plasters),
-    roofType: rng() < 0.82 ? 'gable' : 'hip',
-    ridgeAlongFront: rng() < 0.65,
-    chimney: rng() < 0.85,
-    dormers: pal.roofMat === 'tiles' && rng() < 0.45,
-    shutters: rng() < 0.5,
+    roofType: type === 'hall' || type === 'manor' ? 'hip' : type === 'townhouse' ? 'gable' : rng() < 0.82 ? 'gable' : 'hip',
+    // townhouses and manor wings show a gable to the street; everything else
+    // runs its ridge parallel to the frontage.
+    ridgeAlongFront: type === 'townhouse' ? false : rng() < 0.7,
+    chimney: type === 'hall' || type === 'manor' || type === 'townhouse' ? true : rng() < 0.85,
+    dormers: type === 'hall' ? true : type === 'manor' ? rng() < 0.8 : pal.roofMat === 'tiles' && rng() < 0.4,
+    shutters: type === 'manor' ? rng() < 0.3 : rng() < 0.5,
     shutterColor: pick(rng, pal.shutters),
-    ivy: rng() < 0.3,
+    ivy: rng() < (type === 'cottage' ? 0.42 : 0.22),
+    jetty,
+    wing,
+    wingX,
+    porch,
+    shopfront: type === 'workshop',
+    turret: (type === 'hall' && rng() < 0.55) || (type === 'manor' && rng() < 0.8),
+    outshot,
   };
 }
-
-const FLOOR_H = 3;
 
 export function houseDoorX(w: number) {
   const nWin = Math.max(1, Math.floor((w - 1.2) / 2));
   const spacing = w / (nWin + 1);
   const doorIdx = Math.floor(nWin / 2);
   return nWin % 2 === 1 ? 0 : -w / 2 + spacing * (doorIdx + 1) - spacing / 2;
+}
+
+/**
+ * The manor's cross wing is the only part of a house that projects at ground
+ * level. Its box is derived here so the builder and the collision layer can
+ * never disagree about where it is.
+ */
+export function wingBox(o: HouseOpts) {
+  if (o.wing <= 0) return null;
+  const w = Math.min(o.w * 0.36, 4.2);
+  const x = (o.wingX < 0 ? -1 : 1) * (o.w / 2 - w / 2 - 0.5);
+  return { x, w, d: o.wing };
+}
+
+/**
+ * A house that projects into the street looks broken. When the gap to the
+ * carriageway is tight, strip the projecting features rather than let the
+ * cross wing straddle the paving.
+ */
+export function clampHouseFrontage(o: HouseOpts, gap: number) {
+  if (o.wing > 0 && gap < o.wing + 1.0) {
+    o.wing = 0;
+    o.wingX = 0;
+  }
+  if (o.porch && gap < 2.8) o.porch = false;
 }
 
 function addWindow(c: Collector, base: THREE.Matrix4, x: number, y: number, z: number, rotY: number, w = 0.9, h = 1.1, shutters?: number) {
@@ -110,109 +227,250 @@ function addDoor(c: Collector, base: THREE.Matrix4, x: number, z: number, rotY: 
   c.add('stone', box(w + 0.6, 0.15, 0.5), m.clone().multiply(mat4(0, 0.075, 0.3)), 0xaaa194);
 }
 
-function addTimberFrame(c: Collector, base: THREE.Matrix4, faceW: number, H: number, floors: number, rotY: number, offset: number) {
-  // frame on a face; local face coordinate: x across, y up, z toward outside
+/** One timber-framed storey on one elevation (sill, head, studs, braces). */
+function addTimberBay(c: Collector, base: THREE.Matrix4, faceW: number, FH: number, y0: number, rotY: number, offset: number) {
   const m = base.clone().multiply(mat4(0, 0, 0, rotY)).multiply(mat4(0, 0, offset));
-  const t = 0.16;
+  const t = 0.15;
   const col = PALETTE.timber;
-  // horizontals
-  for (let f = 0; f <= floors; f++) {
-    const y = Math.min(H - 0.1, f * FLOOR_H + (f === 0 ? 0.1 : 0));
-    c.add('wood', box(faceW + 0.05, t, 0.1), m.clone().multiply(mat4(0, y, 0.05)), col);
-  }
-  // verticals
-  const n = Math.max(2, Math.round(faceW / 1.6));
+  c.add('wood', box(faceW + 0.06, t, 0.1), m.clone().multiply(mat4(0, y0 + 0.08, 0.05)), col);
+  c.add('wood', box(faceW + 0.06, t, 0.1), m.clone().multiply(mat4(0, y0 + FH - 0.08, 0.05)), col);
+  const n = Math.max(2, Math.round(faceW / 1.7));
   for (let i = 0; i <= n; i++) {
     const x = -faceW / 2 + (faceW / n) * i;
-    c.add('wood', box(t, H, 0.1), m.clone().multiply(mat4(x, H / 2, 0.05)), col);
+    c.add('wood', box(t, FH, 0.1), m.clone().multiply(mat4(x, y0 + FH / 2, 0.05)), col);
   }
-  // diagonal braces on upper floors
-  for (let f = 1; f < floors; f++) {
-    for (let i = 0; i < n; i += 2) {
-      const x0 = -faceW / 2 + (faceW / n) * i;
-      const x1 = x0 + faceW / n;
-      const cx = (x0 + x1) / 2;
-      const cy = f * FLOOR_H + FLOOR_H / 2;
-      const len = Math.hypot(x1 - x0, FLOOR_H) * 0.92;
-      const ang = Math.atan2(FLOOR_H, x1 - x0) * (i % 4 === 0 ? 1 : -1);
-      const mm = m.clone().multiply(mat4(cx, cy, 0.04)).multiply(new THREE.Matrix4().makeRotationZ(ang));
-      c.add('wood', box(len, t * 0.8, 0.08), mm, col);
-    }
+  for (let i = 0; i < n; i += 2) {
+    const x0 = -faceW / 2 + (faceW / n) * i;
+    const x1 = x0 + faceW / n;
+    const len = Math.hypot(x1 - x0, FH) * 0.9;
+    const ang = Math.atan2(FH, x1 - x0) * (i % 4 === 0 ? 1 : -1);
+    const mm = m.clone().multiply(mat4((x0 + x1) / 2, y0 + FH / 2, 0.04)).multiply(new THREE.Matrix4().makeRotationZ(ang));
+    c.add('wood', box(len, t * 0.78, 0.08), mm, col);
   }
 }
 
+/**
+ * A village house with a real architectural type: cottage, townhouse (jettied,
+ * gable to the street), longhouse (low and long with a rear outshot), guild
+ * hall (hipped, dormered, stair turret), workshop (arched shop front and sign)
+ * or manor (cross wing, columned porch, turret).
+ */
 export function addHouse(c: Collector, base: THREE.Matrix4, o: HouseOpts, rng: RNG): Obb {
-  const H = o.floors * FLOOR_H;
+  const FH = SHAPES[o.type].floorH;
+  const H = o.floors * FH;
   const wallKey = o.style === 'stone' ? 'stone' : 'plaster';
   const w = o.w;
   const d = o.d;
-  // Walls
-  c.add(wallKey, box(w, H, d), base.clone().multiply(mat4(0, H / 2, 0)), o.wallColor);
-  // Foundation stripe
-  c.add('stone', box(w + 0.1, 0.5, d + 0.1), base.clone().multiply(mat4(0, 0.25, 0)), 0x9d9385);
+  const shut = o.shutters ? o.shutterColor : undefined;
+  const doorX = houseDoorX(w);
+  const jettyTotal = o.jetty * Math.max(0, o.floors - 1);
+  const topW = w + jettyTotal * 2;
+  const topD = d + jettyTotal * 2;
+  const wing = wingBox(o);
+  const wingW = wing ? wing.w : 0;
 
-  // Roof
-  const ridgeLen = o.ridgeAlongFront ? w : d;
-  const span = o.ridgeAlongFront ? d : w;
-  const roofH = span * 0.5 * range(rng, 0.85, 1.1);
+  // ---- plinth
+  c.add('stone', box(w + 0.3, 0.5, d + 0.3), base.clone().multiply(mat4(0, 0.25, 0)), 0x9d9385);
+  if (o.type === 'hall' || o.type === 'manor') {
+    c.add('stone', box(w + 0.46, 0.22, d + 0.46), base.clone().multiply(mat4(0, 0.6, 0)), 0xa89c88);
+  }
+
+  // ---- storeys (jettied upper floors step outwards)
+  for (let f = 0; f < o.floors; f++) {
+    const over = o.jetty * f;
+    const fw = w + over * 2;
+    const fd = d + over * 2;
+    const y0 = f * FH;
+    c.add(wallKey, box(fw, FH, fd), base.clone().multiply(mat4(0, y0 + FH / 2, 0)), o.wallColor);
+    if (over > 0) {
+      c.add('wood', box(fw + 0.1, 0.22, fd + 0.1), base.clone().multiply(mat4(0, y0 + 0.06, 0)), 0x4a3524);
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          c.add('wood', box(0.2, over + 0.5, 0.2), base.clone().multiply(mat4(sx * (fw / 2 - 0.3), y0 - 0.2, sz * (fd / 2 - 0.3))), 0x40301f);
+        }
+      }
+    }
+    if (o.style === 'timber') {
+      const faces: [number, number, number][] = [
+        [fw, 0, fd / 2],
+        [fw, Math.PI, fd / 2],
+        [fd, Math.PI / 2, fw / 2],
+        [fd, -Math.PI / 2, fw / 2],
+      ];
+      for (const [faceW, rotY, offset] of faces) addTimberBay(c, base, faceW, FH, y0, rotY, offset);
+    }
+  }
+
+  // ---- windows
+  const tall = o.type === 'hall' || o.type === 'manor';
+  const winW = tall ? 1.0 : o.type === 'townhouse' ? 0.78 : 0.9;
+  const winH = tall ? 1.42 : o.type === 'townhouse' ? 1.28 : 1.15;
+  const shopSide = o.shopfront ? (doorX <= 0 ? 1 : -1) : 0;
+  for (let f = 0; f < o.floors; f++) {
+    const over = o.jetty * f;
+    const fw = w + over * 2;
+    const fd = d + over * 2;
+    const nWin = Math.max(1, Math.floor((fw - 1.2) / (o.type === 'townhouse' ? 1.7 : 2.0)));
+    const spacing = fw / (nWin + 1);
+    const y = f * FH + (f === 0 ? 1.75 : 1.85);
+    let frontWindows = 0;
+    for (let i = 0; i < nWin; i++) {
+      const x = -fw / 2 + spacing * (i + 1);
+      const nearDoor = Math.abs(x - doorX) < spacing * 0.62;
+      const shopWin = o.shopfront && shopSide !== 0 && Math.sign(x) === shopSide && Math.abs(x) < fw * 0.34;
+      const underWing = wing !== null && Math.abs(x - wing.x) < wingW / 2 + 0.6;
+      if (!(f === 0 && (nearDoor || shopWin)) && !underWing) {
+        addWindow(c, base, x, y, fd / 2, 0, winW, winH, shut);
+        frontWindows++;
+      }
+      if (!(f === 0 && nearDoor) && !underWing && rng() < 0.7) addWindow(c, base, -x, y, -fd / 2, Math.PI, winW, winH, shut);
+    }
+    // A narrow frontage (townhouses) can lose every window to the doorway;
+    // make sure each storey still gets glazing either side of the door.
+    if (frontWindows === 0 && !(f === 0 && o.shopfront)) {
+      const off = Math.min(fw / 2 - 0.9, Math.max(1.35, spacing * 0.95));
+      for (const sideX of [-1, 1]) {
+        const wx = Math.max(-fw / 2 + 0.78, Math.min(fw / 2 - 0.78, doorX + sideX * off));
+        if (wing !== null && Math.abs(wx - wing.x) < wingW / 2 + 0.6) continue;
+        addWindow(c, base, wx, y, fd / 2, 0, winW * 0.92, winH, shut);
+      }
+    }
+    const nSide = Math.max(1, Math.floor((fd - 1.5) / 2.4));
+    const sSp = fd / (nSide + 1);
+    for (let i = 0; i < nSide; i++) {
+      const z = -fd / 2 + sSp * (i + 1);
+      if (rng() < 0.6) addWindow(c, base, fw / 2, y, z, Math.PI / 2, winW * 0.9, winH * 0.95, shut);
+      if (rng() < 0.6) addWindow(c, base, -fw / 2, y, z, -Math.PI / 2, winW * 0.9, winH * 0.95, shut);
+    }
+  }
+
+  // ---- entrance (type-specific)
+  if (o.type === 'longhouse') {
+    for (const s of [-1, 1]) {
+      c.add('wood', box(0.44, 3.2, 0.44), base.clone().multiply(mat4(doorX + s * 1.55, 1.6, d / 2 + 0.14)), 0x4a3320);
+      c.add('wood', box(0.58, 0.34, 0.58), base.clone().multiply(mat4(doorX + s * 1.55, 3.3, d / 2 + 0.14)), 0x4a3320);
+    }
+    addDoor(c, base, doorX, d / 2, 0, 1.7, 2.55);
+  } else if (o.shopfront) {
+    addDoor(c, base, doorX, d / 2, 0, 1.25, 2.45);
+    // stone arch over the door
+    c.add('stone', new THREE.TorusGeometry(0.78, 0.15, 6, 14, Math.PI), base.clone().multiply(mat4(doorX, 2.45, d / 2 + 0.14)), 0xc6bda9);
+    // wide shop glazing
+    const sw = Math.min(2.9, w * 0.4);
+    const sx = shopSide * Math.min(w * 0.28, 2.4);
+    const sm = base.clone().multiply(mat4(sx, 1.55, d / 2 + 0.05));
+    c.add('flat', box(sw + 0.28, 1.5, 0.14), sm.clone().multiply(mat4(0, 0, 0.02)), 0x574434);
+    c.add('glass', box(sw, 1.22, 0.1), sm.clone().multiply(mat4(0, 0, 0.08)));
+    for (const dx of [-sw / 6, sw / 6]) c.add('wood', box(0.09, 1.22, 0.14), sm.clone().multiply(mat4(dx, 0, 0.09)), PALETTE.timber);
+    c.add('wood', box(sw + 0.4, 0.12, 0.5), sm.clone().multiply(mat4(0, -0.68, 0.14)), PALETTE.timber);
+    // hanging sign
+    const signX = doorX - shopSide * 2.15;
+    c.add('wood', box(0.12, 0.12, 1.15), base.clone().multiply(mat4(signX, 3.35, d / 2 + 0.55)), 0x40301f);
+    c.add('wood', box(0.85, 0.72, 0.09), base.clone().multiply(mat4(signX, 2.85, d / 2 + 1.1)), 0x8a6a3c);
+    c.add('flat', box(0.42, 0.38, 0.05), base.clone().multiply(mat4(signX, 2.85, d / 2 + 1.16)), o.shutterColor);
+  } else if (o.porch) {
+    addDoor(c, base, doorX, d / 2, 0, 1.45, 2.65);
+    // step slab, two columns, lintel and a lean-to hood
+    c.add('stone', box(4.1, 0.24, 2.5), base.clone().multiply(mat4(doorX, 0.12, d / 2 + 1.2)), 0xb0a692);
+    for (const s of [-1, 1]) {
+      c.add('stone', box(0.44, 3.0, 0.44), base.clone().multiply(mat4(doorX + s * 1.55, 1.5, d / 2 + 2.05)), 0xc6bda9);
+      c.add('stone', box(0.62, 0.22, 0.62), base.clone().multiply(mat4(doorX + s * 1.55, 3.06, d / 2 + 2.05)), 0xd0c7b3);
+    }
+    c.add('stone', box(3.7, 0.3, 0.55), base.clone().multiply(mat4(doorX, 3.25, d / 2 + 2.05)), 0xc6bda9);
+    c.add(o.roofMat, box(4.3, 0.18, 2.9), base.clone().multiply(mat4(doorX, 3.5, d / 2 + 0.95)).multiply(new THREE.Matrix4().makeRotationX(-0.2)), o.roofColor);
+  } else {
+    const dh = o.type === 'hall' ? 2.7 : 2.25;
+    addDoor(c, base, doorX, d / 2, 0, o.type === 'hall' ? 1.35 : 1.15, dh);
+    if (o.type === 'hall') {
+      // arched surround and flanking buttresses
+      c.add('stone', new THREE.TorusGeometry(0.85, 0.16, 6, 14, Math.PI), base.clone().multiply(mat4(doorX, dh, d / 2 + 0.14)), 0xc6bda9);
+      for (const s of [-1, 1]) {
+        c.add('stone', box(0.55, 2.6, 0.5), base.clone().multiply(mat4(s * (w / 2 - 0.35), 1.3, d / 2 + 0.1)), 0xb3a896);
+      }
+    }
+  }
+
+  // ---- projecting cross-gable wing (manor)
+  if (wing) {
+    const wm = base.clone().multiply(mat4(wing.x, 0, d / 2 + wing.d / 2));
+    c.add(wallKey, box(wingW, H, o.wing + 0.06), wm.clone().multiply(mat4(0, H / 2, 0)), o.wallColor);
+    c.add('stone', box(wingW + 0.2, 0.45, o.wing + 0.24), wm.clone().multiply(mat4(0, 0.22, 0)), 0x9d9385);
+    const gm = wm.clone().multiply(mat4(0, H, 0, Math.PI / 2));
+    const gh = wingW * 0.72;
+    c.add(o.roofMat, gableRoof(o.wing + 0.55, wingW, gh), gm, o.roofColor);
+    c.add(wallKey, gableEnds(o.wing + 0.55, wingW, gh), gm, o.wallColor);
+    c.add('flat', box(0.28, 0.16, o.wing + 1.0), gm.clone().multiply(mat4(0, gh + 0.05, 0)), new THREE.Color(o.roofColor).multiplyScalar(0.7));
+    for (let f = 0; f < o.floors; f++) {
+      const y = f * FH + FH * 0.58;
+      addWindow(c, wm, 0, y, o.wing / 2 + 0.07, 0, 0.95, 1.35, shut);
+      if (rng() < 0.6) addWindow(c, wm, wingW / 2, y, wing.d * 0.55, Math.PI / 2, 0.8, 1.2, shut);
+    }
+  }
+
+  // ---- rear stair turret
+  if (o.turret) {
+    const tx = w * 0.33;
+    const tz = -d / 2 + 0.45;
+    const th = H + 1.6;
+    c.add('stone', new THREE.CylinderGeometry(0.98, 1.1, th, 10), base.clone().multiply(mat4(tx, th / 2, tz)), 0xaba596);
+    c.add('stone', new THREE.CylinderGeometry(1.3, 1.3, 0.32, 10), base.clone().multiply(mat4(tx, th, tz)), 0xbcb5a6);
+    c.add(o.roofMat, new THREE.ConeGeometry(1.22, 2.0, 10), base.clone().multiply(mat4(tx, th + 1.16, tz)), new THREE.Color(o.roofColor).multiplyScalar(0.85));
+    for (let i = 0; i < 3; i++) {
+      const a = -0.7 + i * 0.9;
+      c.add('flat', box(0.3, 0.7, 0.14), base.clone().multiply(mat4(tx + Math.sin(a) * 1.0, H * 0.45 + i * 1.4, tz + Math.cos(a) * 1.0, a)), 0x2a2622);
+    }
+  }
+
+  // ---- rear lean-to outshot (longhouse)
+  if (o.outshot) {
+    const ow = w * 0.56;
+    const ox = -w * 0.16;
+    const oz = -d / 2 - 0.95;
+    const oh = 2.5;
+    c.add(wallKey, box(ow, oh, 1.9), base.clone().multiply(mat4(ox, oh / 2, oz)), o.wallColor);
+    c.add('stone', box(ow + 0.2, 0.4, 2.1), base.clone().multiply(mat4(ox, 0.2, oz)), 0x9d9385);
+    if (o.style === 'timber') {
+      for (let i = 0; i <= 4; i++) {
+        const bx = ox - ow / 2 + (ow / 4) * i;
+        c.add('wood', box(0.13, oh, 0.1), base.clone().multiply(mat4(bx, oh / 2, oz - 0.96)), PALETTE.timber);
+      }
+    }
+    c.add(o.roofMat, box(ow + 0.8, 0.16, 2.5), base.clone().multiply(mat4(ox, oh + 0.22, oz - 0.25)).multiply(new THREE.Matrix4().makeRotationX(-0.24)), o.roofColor);
+    addWindow(c, base, ox, 1.5, oz - 0.98, Math.PI, 0.7, 0.8);
+  }
+
+  // ---- roof
+  const ridgeLen = o.ridgeAlongFront ? topW : topD;
+  const span = o.ridgeAlongFront ? topD : topW;
+  const roofH = (span / 2) * SHAPES[o.type].pitch * range(rng, 0.94, 1.06);
   const roofRot = o.ridgeAlongFront ? 0 : Math.PI / 2;
   const roofM = base.clone().multiply(mat4(0, H, 0, roofRot));
+  const overhang = o.type === 'longhouse' ? 0.62 : o.type === 'manor' ? 0.55 : 0.45;
   if (o.roofType === 'gable') {
-    c.add(o.roofMat, gableRoof(ridgeLen, span, roofH), roofM, o.roofColor);
+    c.add(o.roofMat, gableRoof(ridgeLen, span, roofH, overhang), roofM, o.roofColor);
     c.add(wallKey, gableEnds(ridgeLen, span, roofH), roofM, o.wallColor);
     if (o.style === 'timber') {
-      // beams on gable ends
       for (const s of [-1, 1]) {
-        const gm = roofM.clone().multiply(mat4(s * ridgeLen / 2, 0, 0, s > 0 ? Math.PI / 2 : -Math.PI / 2));
+        const gm = roofM.clone().multiply(mat4((s * ridgeLen) / 2, 0, 0, s > 0 ? Math.PI / 2 : -Math.PI / 2));
         c.add('wood', box(span * 0.9, 0.14, 0.1), gm.clone().multiply(mat4(0, 0.6, 0.06)), PALETTE.timber);
         c.add('wood', box(0.14, roofH * 0.9, 0.1), gm.clone().multiply(mat4(0, roofH * 0.45, 0.06)), PALETTE.timber);
       }
     }
-  } else {
-    c.add(o.roofMat, hipRoof(ridgeLen, span, roofH * 0.8), roofM, o.roofColor);
-  }
-  // Ridge cap
-  if (o.roofType === 'gable') {
     c.add('flat', box(ridgeLen + 0.9, 0.18, 0.3), roofM.clone().multiply(mat4(0, roofH + 0.02, 0)), new THREE.Color(o.roofColor).multiplyScalar(0.7));
+  } else {
+    c.add(o.roofMat, hipRoof(ridgeLen, span, roofH, overhang), roofM, o.roofColor);
+  }
+  // longhouse smoke louvre on the ridge
+  if (o.type === 'longhouse') {
+    c.add('wood', box(0.7, 0.75, 0.7), roofM.clone().multiply(mat4(ridgeLen * 0.12, roofH + 0.3, 0)), 0x3a2a1c);
+    c.add('flat', box(0.95, 0.12, 0.95), roofM.clone().multiply(mat4(ridgeLen * 0.12, roofH + 0.72, 0)), 0x2b2b2e);
   }
 
-  // Timber framing
-  if (o.style === 'timber') {
-    addTimberFrame(c, base, w, H, o.floors, 0, d / 2);
-    addTimberFrame(c, base, w, H, o.floors, Math.PI, d / 2);
-    addTimberFrame(c, base, d, H, o.floors, Math.PI / 2, w / 2);
-    addTimberFrame(c, base, d, H, o.floors, -Math.PI / 2, w / 2);
-  }
-
-  // Windows & door on front (+z) and back
-  const nWin = Math.max(1, Math.floor((w - 1.2) / 2.0));
-  const spacing = w / (nWin + 1);
-  const doorX = houseDoorX(w);
-  const shut = o.shutters ? o.shutterColor : undefined;
-  for (let f = 0; f < o.floors; f++) {
-    const y = f * FLOOR_H + (f === 0 ? 1.7 : 1.75);
-    for (let i = 0; i < nWin; i++) {
-      const x = -w / 2 + spacing * (i + 1);
-      if (f === 0 && Math.abs(x - doorX) < spacing * 0.6) continue;
-      addWindow(c, base, x, y, d / 2, 0, 0.9, 1.15, shut);
-      if (rng() < 0.7) addWindow(c, base, -x, y, -d / 2, Math.PI, 0.9, 1.15, shut);
-    }
-    // side windows
-    const nSide = Math.max(1, Math.floor((d - 1.5) / 2.4));
-    const sSp = d / (nSide + 1);
-    for (let i = 0; i < nSide; i++) {
-      const z = -d / 2 + sSp * (i + 1);
-      if (rng() < 0.6) addWindow(c, base, w / 2, y, z, Math.PI / 2, 0.8, 1.1, shut);
-      if (rng() < 0.6) addWindow(c, base, -w / 2, y, z, -Math.PI / 2, 0.8, 1.1, shut);
-    }
-  }
-  addDoor(c, base, doorX, d / 2, 0);
-
-  // Dormers on front slope (only if ridge along front and gable)
-  if (o.dormers && o.roofType === 'gable' && o.ridgeAlongFront && roofH > 1.6) {
-    const nD = w > 8 ? 2 : 1;
+  // ---- dormers on the front slope
+  if (o.dormers && o.ridgeAlongFront && roofH > 1.5) {
+    const nD = topW > 8 ? 2 : 1;
     for (let i = 0; i < nD; i++) {
-      const x = nD === 1 ? 0 : (i === 0 ? -w / 4 : w / 4);
+      const x = nD === 1 ? 0 : i === 0 ? -topW / 4 : topW / 4;
       const k = roofH / (span / 2);
       const zc = span * 0.22;
       const yBase = H + roofH - zc * k - 0.9;
@@ -224,22 +482,29 @@ export function addHouse(c: Collector, base: THREE.Matrix4, o: HouseOpts, rng: R
     }
   }
 
-  // Chimney
+  // ---- chimney
   if (o.chimney) {
-    const cx = o.ridgeAlongFront ? range(rng, -w / 3, w / 3) : 0;
-    const cz = o.ridgeAlongFront ? range(rng, -0.4, 0.4) : range(rng, -d / 3, d / 3);
-    const top = H + roofH + 0.9;
-    c.add('stone', box(0.9, top - H + 1.5, 0.9), base.clone().multiply(mat4(cx, (top + H - 1.5) / 2, cz)), 0xa88a74);
-    c.add('stone', box(1.1, 0.25, 1.1), base.clone().multiply(mat4(cx, top + 0.1, cz)), 0x8d7260);
-    c.add('flat', new THREE.CylinderGeometry(0.16, 0.16, 0.4, 8), base.clone().multiply(mat4(cx, top + 0.4, cz)), 0x5a4a40);
+    const grand = o.type === 'hall' || o.type === 'manor';
+    const cx = o.ridgeAlongFront ? (grand ? topW * 0.28 : range(rng, -topW / 3, topW / 3)) : 0;
+    const cz = o.ridgeAlongFront ? range(rng, -0.4, 0.4) : range(rng, -topD / 3, topD / 3);
+    const top = H + roofH + (grand ? 1.6 : 0.9);
+    const cw = grand ? 1.25 : 0.9;
+    const baseY = H - 1.5;
+    c.add('stone', box(cw, top - baseY, cw), base.clone().multiply(mat4(cx, (top + baseY) / 2, cz)), 0xa88a74);
+    c.add('stone', box(cw + 0.22, 0.25, cw + 0.22), base.clone().multiply(mat4(cx, top + 0.1, cz)), 0x8d7260);
+    if (grand) {
+      for (const s of [-1, 1]) c.add('stone', new THREE.CylinderGeometry(0.17, 0.17, 0.55, 8), base.clone().multiply(mat4(cx + s * 0.3, top + 0.5, cz)), 0x6f5344);
+    } else {
+      c.add('flat', new THREE.CylinderGeometry(0.16, 0.16, 0.4, 8), base.clone().multiply(mat4(cx, top + 0.4, cz)), 0x5a4a40);
+    }
   }
 
-  // Ivy blobs
+  // ---- ivy (ground floor only, so it never floats past a jetty)
   if (o.ivy) {
     const n = 2 + Math.floor(rng() * 3);
     for (let i = 0; i < n; i++) {
       const x = range(rng, -w / 2 + 0.6, w / 2 - 0.6);
-      const y = range(rng, 0.6, H * 0.7);
+      const y = range(rng, 1.0, Math.max(1.2, Math.min(FH * 0.85, H * 0.7)));
       const r = range(rng, 0.5, 1.1);
       c.add('leaf', new THREE.SphereGeometry(r, 7, 5), base.clone().multiply(mat4(x, y, d / 2 + 0.05, 0, 1, 1.3, 0.25)), 0x3f6b2e);
     }

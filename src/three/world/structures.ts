@@ -150,16 +150,105 @@ export function addRuins(c: Collector, base: THREE.Matrix4, rng: RNG) {
 }
 
 /* --------------------------- Watchtower --------------------------- */
+/**
+ * A real border tower instead of a bare cylinder: battered plinth, two-stage
+ * shaft with a string course, arrow slits, a corbelled parapet with merlons,
+ * a timber hoarding, a stair turret and a shingle cone. 24 m to the finial —
+ * tall enough to read as a landmark from the road.
+ */
 export function addWatchtower(c: Collector, base: THREE.Matrix4) {
-  const H = 13;
-  c.add('stone', new THREE.CylinderGeometry(2.4, 3, H, 12), base.clone().multiply(mat4(0, H / 2, 0)), 0x8f8d8a);
-  c.add('stone', new THREE.CylinderGeometry(3.1, 3.1, 0.9, 12), base.clone().multiply(mat4(0, H, 0)), 0xa09e99);
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2;
-    c.add('stone', box(1.2, 1.1, 0.4), base.clone().multiply(mat4(Math.sin(a) * 2.8, H + 1.1, Math.cos(a) * 2.8, a)), 0xa5a39e);
+  const stone = 0x8f8d8a;
+  const light = 0xa6a29b;
+  const shaft2 = 0x94918c;
+  const slateCol = 0x4f555c;
+  const py = 16.2; // wall head / parapet springing
+
+  // ---- 1. footing and battered plinth
+  c.add('stone', new THREE.CylinderGeometry(3.35, 3.8, 0.75, 16), base.clone().multiply(mat4(0, 0.37, 0)), 0x807d79);
+  c.add('stone', new THREE.CylinderGeometry(3.06, 3.36, 2.45, 16), base.clone().multiply(mat4(0, 1.97, 0)), 0x8a8783);
+  c.add('stone', new THREE.CylinderGeometry(3.14, 3.14, 0.26, 16), base.clone().multiply(mat4(0, 3.32, 0)), light);
+
+  // ---- 2. shaft, two stages with a string course between them
+  c.add('stone', new THREE.CylinderGeometry(2.74, 3.06, 7.35, 16), base.clone().multiply(mat4(0, 7.13, 0)), stone);
+  c.add('stone', new THREE.CylinderGeometry(2.92, 2.92, 0.42, 16), base.clone().multiply(mat4(0, 10.85, 0)), light);
+  c.add('stone', new THREE.CylinderGeometry(2.52, 2.74, 5.25, 16), base.clone().multiply(mat4(0, 13.7, 0)), shaft2);
+
+  // ---- 3. arrow slits, sunk into the curved face
+  const slits: [number, number][] = [
+    [0.45, 6.4], [1.9, 6.4], [3.35, 6.4], [4.9, 6.4],
+    [0.9, 12.7], [2.7, 12.7], [4.6, 12.7], [5.6, 12.7],
+  ];
+  for (const [a, y] of slits) {
+    const r = y > 11 ? 2.62 : 2.9;
+    const m = base.clone().multiply(mat4(Math.sin(a) * r, y, Math.cos(a) * r, a));
+    c.add('stone', box(0.52, 1.78, 0.2), m.clone().multiply(mat4(0, 0, -0.04)), light);
+    c.add('flat', box(0.24, 1.5, 0.16), m.clone().multiply(mat4(0, 0, 0.06)), 0x231f1c);
   }
-  c.add('flat', new THREE.ConeGeometry(2.6, 2.4, 12), base.clone().multiply(mat4(0, H + 2.8, 0)), 0x50565c);
-  return { hw: 3.4, hd: 3.4 };
+
+  // ---- 4. upper windows with stone lintels
+  for (let i = 0; i < 3; i++) {
+    const a = 0.85 + i * 1.5;
+    const m = base.clone().multiply(mat4(Math.sin(a) * 2.55, 14.7, Math.cos(a) * 2.55, a));
+    c.add('flat', box(0.64, 1.02, 0.2), m.clone().multiply(mat4(0, 0, 0.03)), 0x2a2622);
+    c.add('stone', box(0.98, 0.16, 0.36), m.clone().multiply(mat4(0, -0.62, 0.07)), light);
+  }
+
+  // ---- 5. timber hoarding on the corbel, then the parapet
+  c.add('stone', new THREE.CylinderGeometry(3.24, 2.5, 1.2, 16), base.clone().multiply(mat4(0, py + 0.2, 0)), 0x9a9791);
+  c.add('wood', new THREE.CylinderGeometry(3.16, 3.0, 1.0, 16, 1, true), base.clone().multiply(mat4(0, py - 0.55, 0)), 0x4a3524);
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2;
+    c.add('wood', box(0.09, 1.0, 0.09), base.clone().multiply(mat4(Math.sin(a) * 3.14, py - 0.55, Math.cos(a) * 3.14, a)), 0x392a1d);
+  }
+  c.add('stone', new THREE.CylinderGeometry(3.28, 3.28, 1.55, 16), base.clone().multiply(mat4(0, py + 1.55, 0)), light);
+  c.add('stone', new THREE.CylinderGeometry(3.42, 3.42, 0.22, 16), base.clone().multiply(mat4(0, py + 2.42, 0)), 0xb2afa8);
+  const merlons = 12;
+  for (let i = 0; i < merlons; i++) {
+    const a = (i / merlons) * Math.PI * 2 + 0.13;
+    c.add('stone', box(1.08, 0.86, 0.5), base.clone().multiply(mat4(Math.sin(a) * 3.2, py + 2.96, Math.cos(a) * 3.2, a)), 0xb8b5ae);
+  }
+
+  // ---- 6. shingle cone inside the parapet
+  c.add('slate', new THREE.ConeGeometry(3.0, 3.5, 16), base.clone().multiply(mat4(0, py + 4.4, 0)), slateCol);
+  c.add('slate', new THREE.CylinderGeometry(0.1, 0.16, 0.9, 6), base.clone().multiply(mat4(0, py + 6.5, 0)), 0x3c4249);
+  c.add('flat', new THREE.SphereGeometry(0.3, 8, 6), base.clone().multiply(mat4(0, py + 6.1, 0)), 0xb08a3c);
+
+  // ---- 7. stair turret (east side) rising to the parapet
+  const tx = 2.6;
+  const tz = -0.45;
+  c.add('stone', new THREE.CylinderGeometry(1.06, 1.22, py + 0.85, 12), base.clone().multiply(mat4(tx, (py + 0.85) / 2, tz)), 0x8d8a85);
+  c.add('stone', new THREE.CylinderGeometry(1.34, 1.34, 0.26, 12), base.clone().multiply(mat4(tx, py + 0.9, tz)), light);
+  c.add('slate', new THREE.ConeGeometry(1.32, 2.2, 12), base.clone().multiply(mat4(tx, py + 2.18, tz)), 0x4b5158);
+  for (const y of [5.5, 11.2]) {
+    c.add('flat', box(0.9, 1.1, 0.16), base.clone().multiply(mat4(tx + 1.02, y, tz, Math.PI / 2)), 0x241f1c);
+  }
+
+  // ---- 8. projecting forebuilding with the door on its face
+  const fm = base.clone().multiply(mat4(0, 0, 3.62));
+  c.add('stone', box(2.5, 3.35, 1.35), fm.clone().multiply(mat4(0, 1.67, 0)), 0x96938d);
+  c.add('stone', box(2.72, 0.3, 1.55), fm.clone().multiply(mat4(0, 3.42, 0)), 0xa6a29b);
+  for (const s of [-1, 1]) c.add('stone', box(0.6, 0.52, 1.35), fm.clone().multiply(mat4(s * 0.86, 3.82, 0)), 0xa6a29b);
+  c.add('wood', box(1.45, 2.6, 0.22), fm.clone().multiply(mat4(0, 1.33, 0.74)), 0x4a2f1c);
+  for (const y of [0.6, 1.95]) c.add('flat', box(1.5, 0.13, 0.26), fm.clone().multiply(mat4(0, y, 0.75)), 0x3a3a3e);
+  c.add('stone', new THREE.TorusGeometry(0.95, 0.16, 6, 14, Math.PI), fm.clone().multiply(mat4(0, 2.6, 0.72)), 0xb0aca5);
+  // two worn steps down to the road
+  c.add('stone', box(2.6, 0.24, 0.72), base.clone().multiply(mat4(0, 0.56, 4.32)), 0x9d9a94);
+  c.add('stone', box(2.25, 0.32, 0.8), base.clone().multiply(mat4(0, 0.16, 4.62)), 0xa5a29b);
+  // lantern bracket beside the door
+  c.add('flat', box(0.1, 0.1, 0.7), fm.clone().multiply(mat4(1.55, 3.0, 0.55)), 0x2b2b2e);
+  c.add('lampglass', new THREE.SphereGeometry(0.19, 8, 6), fm.clone().multiply(mat4(1.55, 2.82, 0.88)), 0xffcf87);
+
+  // ---- 9. banner on the parapet
+  c.add('flat', new THREE.CylinderGeometry(0.07, 0.09, 5.4, 6), base.clone().multiply(mat4(-2.78, py + 5.25, 0.95)), 0x4a3a2a);
+  c.add('flat', box(1.85, 1.1, 0.05), base.clone().multiply(mat4(-1.88, py + 6.95, 0.95)), 0x8a2f2f);
+  c.add('flat', box(1.85, 0.16, 0.06), base.clone().multiply(mat4(-1.88, py + 6.35, 0.95)), 0x8a2f2f);
+
+  // ---- 10. weather staining, cheap and effective at distance
+  for (const [a, y, h] of [[1.2, 5.0, 3.2], [4.3, 8.4, 4.0], [3.0, 2.2, 1.6]] as [number, number, number][]) {
+    c.add('stone', box(0.9, h, 0.09), base.clone().multiply(mat4(Math.sin(a) * 2.95, y, Math.cos(a) * 2.95, a)), 0x7d7a76);
+  }
+
+  return { hw: 4.8, hd: 4.8 };
 }
 
 /* --------------------------- Windmill ----------------------------- */

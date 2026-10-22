@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { World } from './world/world';
+import { roadQuery, WORLD_HALF } from './world/land';
 
 export type Mode = 'overview' | 'stroll' | 'fly' | 'ride';
 
@@ -95,7 +96,9 @@ export class ExplorerControls {
 
   /** Move the player instantly (fast travel / boarding) and pre-build terrain there. */
   teleport(x: number, z: number, y?: number, yaw?: number) {
-    this.world.terrain.prewarm(x, z, 1100);
+    // Pocket interiors are pre-built and 220 m below the map: warming the
+    // terrain there would build chunks nobody can see and stall the door.
+    if (!this.world.interactions?.currentInterior) this.world.terrain.prewarm(x, z, 1100);
     this.camera.position.set(x, y ?? this.world.groundHeight(x, z) + EYE, z);
     this.vel.set(0, 0, 0);
     this.smoothY = this.camera.position.y;
@@ -218,7 +221,10 @@ export class ExplorerControls {
     const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
 
     if (this.mode === 'stroll') {
-      const speed = sprint ? 9.5 : 4.4;
+      const p0 = this.camera.position;
+      // Paved roads are faster going: +35% while on the road surface.
+      const onRoad = roadQuery(p0.x, p0.z).d < 0.5;
+      const speed = (sprint ? 9.5 : 4.4) * (onRoad ? 1.35 : 1);
       const wish = new THREE.Vector3().addScaledVector(forward, f).addScaledVector(right, r);
       if (wish.lengthSq() > 0) wish.normalize().multiplyScalar(speed);
       this.vel.lerp(wish, 1 - Math.exp(-dt * 12));
@@ -262,7 +268,7 @@ export class ExplorerControls {
       }
       p.y = Math.min(p.y, 1400);
       const R = Math.hypot(p.x, p.z);
-      const lim = 7600;
+      const lim = WORLD_HALF - 300;
       if (R > lim) {
         p.x *= lim / R;
         p.z *= lim / R;

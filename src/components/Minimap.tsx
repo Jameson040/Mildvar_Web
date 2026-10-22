@@ -44,6 +44,7 @@ export const Minimap: React.FC<MinimapProps> = ({ engineRef, onOpenFullMap, wate
   const radarRange = ZOOM_RANGES[zoomLevel];
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [location, setLocation] = useState('Mildvar');
+  const locationRef = useRef('Mildvar');
 
   // Static geometry is simplified ONCE, not re-walked every frame.
   const polys = useMemo(() => {
@@ -88,7 +89,13 @@ export const Minimap: React.FC<MinimapProps> = ({ engineRef, onOpenFullMap, wate
 
       if (now - lastState > STATE_INTERVAL) {
         lastState = now;
-        setLocation(engine.world.nearestSettlement(px, pz).v.name);
+        // Only touch React state when the label actually changes.
+        const inside = engine.world.interactions?.currentInterior;
+        const name = inside ? 'Pocket interior' : engine.world.nearestSettlement(px, pz).v.name;
+        if (name !== locationRef.current) {
+          locationRef.current = name;
+          setLocation(name);
+        }
       }
 
       ctx.clearRect(0, 0, SIZE, SIZE);

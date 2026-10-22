@@ -8,7 +8,7 @@ import { TerrainSystem, createRivers, createRoadMeshes } from './chunks';
 import {
   villages, VillageDef, buildRoadNetwork, buildFarms, farms, roads, bridges, platforms, Road, BridgeSpan, terrainHeight, waterDist,
   riverHalfWidth, roadQuery, RIVER_BANK, roadPointAt, SpatialGrid, waterSurfaceY, WORLD_HALF, getRiverPoint, Theme, plazaRadius, landUse, resetWorldLayout,
-  ALL_LOCATIONS, SettlementSpec, riverQuery, riverLength, nearestRiverPoint, waterQuery, LAKE,
+  ALL_LOCATIONS, SettlementSpec, riverQuery, riverLength, nearestRiverPoint, waterQuery, LAKE, FORT, WATCHTOWER_SITES,
 } from './land';
 import { buildVillage, buildFarm, BuildCtx, cropBatch, TreeSpecOut, planVillage } from './villageBuilder';
 import { addBoat, buildMillSails, cropTuftGeometry, addMilestone } from './structures';
@@ -17,10 +17,20 @@ import { containsPoint } from './placement';
 import { WaterPhysicsSystem, WaterAPI } from './waterPhysics';
 import {
   buildLakeEldermere, buildWhisperingWeald, buildFortIronspire, buildGoldenMeadow,
-  buildBorderWatchtowers, WildernessCtx
+  buildWatchtower, WEALD_POS, MEADOW_POS, WildernessCtx
 } from './wilderness';
+import { InteractionSystem } from './interactables';
+
+export interface WorldEntity {
+  id: string;
+  name: string;
+  role: string;
+  faction: string;
+  obj: THREE.Object3D;
+}
 
 interface Walker {
+  id: string;
   obj: THREE.Object3D;
   curve: THREE.Curve<THREE.Vector3>;
   len: number;
@@ -40,6 +50,16 @@ export interface Carriage {
   dir: number;
   speed: number;
   wheels: THREE.Object3D[];
+}
+
+export interface WildernessLandmark {
+  id: string;
+  group: THREE.Group;
+  meshes: THREE.Mesh[];
+  cx: number;
+  cz: number;
+  radius: number;
+  shadow: boolean;
 }
 
 interface Settlement {
@@ -73,13 +93,16 @@ export class World {
   obbs: Obb[] = [];
   obbGrid = new SpatialGrid<Obb>(72);
   settlements: Settlement[] = [];
+  wilderness: WildernessLandmark[] = [];
+  entities = new Map<string, WorldEntity>();
+  interactions!: InteractionSystem;
   natureTiles: NatureTile[] = [];
   walkers: Walker[] = [];
   carriages: Carriage[] = [];
   mills: { obj: THREE.Group; speed: number }[] = [];
   boats: { obj: THREE.Object3D; baseY: number; phase: number }[] = [];
   ducks: { obj: THREE.Object3D; chain: number; t: number; speed: number; off: number }[] = [];
-  soldiers: { obj: THREE.Object3D; baseRot: number; phase: number }[] = [];
+  soldiers: { obj: THREE.Object3D; baseRot: number; baseY: number; phase: number; id: string; name: string; role: string; faction: string }[] = [];
   waterPhysics!: WaterPhysicsSystem;
   private waterApi: WaterAPI = {
     query: riverQuery,
@@ -108,6 +131,11 @@ export class World {
     this.rng = mulberry32(4242);
     this.textures = createTextures();
     this.createMaterials();
+    // Doors, NPCs and pocket interiors are registered while the world is
+    // generated, so the interaction layer must exist before Layer 2.
+    this.interactions = new InteractionSystem(this.materials);
+    this.scene.add(this.interactions.group);
+    this.interactions.mount(this.scene);
     this.buildSky();
     this.buildLights();
     this.scene.add(this.roadsGroup);
@@ -177,28 +205,39 @@ export class World {
       this.settlements.push({ v, group, meshes, radius: v.r + 560, shadow: true });
     });
 
-    // Build Wilderness Landmarks (Fort Ironspire, Lake Eldermere, Weald, Meadow, Watchtowers)
-    const wildC = new Collector();
+    // Wilderness landmarks are built into ONE COLLECTOR PER LANDMARK, not one
+    // global collector. A single 10 km-wide merged mesh can never be frustum
+    // culled (its bounding sphere covers the realm) and it cast shadows
+    // everywhere; per-landmark groups get real culling and shadow gating.
     const wildPatrols: { x: number; y: number; z: number; rot: number; type: 'guard' | 'archer' | 'officer' }[] = [];
     const wildCtx: WildernessCtx = {
-      c: wildC,
+      c: new Collector(),
       rng: this.rng,
       obbs: this.obbs,
       trees: this.ctx.trees as TreeSpecOut[],
       lamps: this.ctx.lamps,
       soldierPatrols: wildPatrols,
+      interactions: this.interactions,
     };
-    buildLakeEldermere(wildCtx);
-    buildWhisperingWeald(wildCtx);
-    buildFortIronspire(wildCtx);
-    buildGoldenMeadow(wildCtx);
-    buildBorderWatchtowers(wildCtx);
 
-    const wildMeshes = wildC.build(this.materials);
-    const wildGroup = new THREE.Group();
-    wildGroup.name = 'wilderness_landmarks';
-    for (const m of wildMeshes) wildGroup.add(m);
-    this.propsGroup.add(wildGroup);
+    const landmarks: { id: string; cx: number; cz: number; radius: number; build: (ctx: WildernessCtx) => void }[] = [
+      { id: 'lake_eldermere', cx: LAKE.x, cz: LAKE.z, radius: 420, build: buildLakeEldermere },
+      { id: 'whispering_weald', cx: WEALD_POS.x, cz: WEALD_POS.z, radius: 540, build: buildWhisperingWeald },
+      { id: 'fort_ironspire', cx: FORT.x, cz: FORT.z, radius: 260, build: buildFortIronspire },
+      { id: 'golden_mead', cx: MEADOW_POS.x, cz: MEADOW_POS.z, radius: 460, build: buildGoldenMeadow },
+    ];
+    for (const lm of landmarks) {
+      const c = new Collector();
+      lm.build({ ...wildCtx, c });
+      this.addWildernessGroup(lm.id, c, lm.cx, lm.cz, lm.radius);
+    }
+    // Each watchtower is its own draw-call cluster so one far tower cannot
+    // keep four near ones in the render list.
+    for (const site of WATCHTOWER_SITES) {
+      const c = new Collector();
+      buildWatchtower({ ...wildCtx, c }, site);
+      this.addWildernessGroup(site.id, c, site.x, site.z, 70);
+    }
 
     /* ================================================================
      *  LAYER 7 — ANIMATION RIGS, WATER PHYSICS & LIGHTS
@@ -354,6 +393,7 @@ export class World {
       flowers: [],
       lamps: [],
       dynamics: [],
+      interactions: this.interactions,
       theme: { ...PALETTE, scale: 1, treeMix: 0.12, foliage: [0x5c9a36, 0x6aa63c], hedge: [0x4a8a35], accent: 0xd9a632 } as unknown as Theme,
       plaza: (x: number, z: number, rx: number, rz: number) => {
         const geo = new THREE.CircleGeometry(1, 40);
@@ -393,6 +433,15 @@ export class World {
     mesh.receiveShadow = true;
     mesh.name = 'lake';
     return mesh;
+  }
+
+  private addWildernessGroup(id: string, c: Collector, cx: number, cz: number, radius: number) {
+    const meshes = c.build(this.materials);
+    const group = new THREE.Group();
+    group.name = id;
+    for (const m of meshes) group.add(m);
+    this.propsGroup.add(group);
+    this.wilderness.push({ id, group, meshes, cx, cz, radius, shadow: true });
   }
 
   private buildBridges() {
@@ -633,7 +682,16 @@ export class World {
   }
 
   /* --------------------------- life --------------------------- */
+  private soldierTemplates = new Map<string, THREE.Group>();
+  private villagerTemplates: THREE.Group[] = [];
+
+  /**
+   * Geometry-sharing NPC factory: each archetype is built exactly once and
+   * every instance is a clone that shares the same GPU vertex buffers.
+   */
   private makeSoldier(type: 'guard' | 'archer' | 'officer') {
+    const cached = this.soldierTemplates.get(type);
+    if (cached) return cached.clone(true);
     const c = new Collector();
     const steel = 0x8a9096;
     const darkIron = 0x42464a;
@@ -685,20 +743,36 @@ export class World {
       m.castShadow = true;
       g.add(m);
     }
-    return g;
+    this.soldierTemplates.set(type, g);
+    return g.clone(true);
   }
 
   private buildSoldiers(patrols: { x: number; y: number; z: number; rot: number; type: 'guard' | 'archer' | 'officer' }[]) {
+    const names = ['Aldric', 'Bryn', 'Cedric', 'Dorin', 'Ewan', 'Falk', 'Garin', 'Halvor', 'Ivar', 'Jorund', 'Kettil', 'Leif'];
+    const roles = { guard: 'Garrison Guard', archer: 'Watch Archer', officer: 'Garrison Officer' } as const;
     patrols.forEach((p, idx) => {
       const soldier = this.makeSoldier(p.type);
       soldier.position.set(p.x, p.y, p.z);
       soldier.rotation.y = p.rot;
       this.scene.add(soldier);
-      this.soldiers.push({ obj: soldier, baseRot: p.rot, phase: idx * 0.7 });
+      const id = `soldier_${idx}`;
+      const faction = p.x < -1000 && p.z < -1000 ? 'Fort Ironspire' : 'Reaches Watch';
+      this.soldiers.push({
+        obj: soldier, baseRot: p.rot, baseY: p.y, phase: idx * 0.7,
+        id, name: `${roles[p.type]} ${names[idx % names.length]}`, role: p.type, faction,
+      });
+      this.entities.set(id, { id, name: names[idx % names.length], role: roles[p.type], faction, obj: soldier });
     });
   }
 
-  private makeVillager(rng: RNG) {
+  private makeVillager(variant: number) {
+    if (!this.villagerTemplates.length) {
+      for (let v = 0; v < 8; v++) this.villagerTemplates.push(this.buildVillagerTemplate(mulberry32(9001 + v * 131)));
+    }
+    return this.villagerTemplates[variant % this.villagerTemplates.length].clone(true);
+  }
+
+  private buildVillagerTemplate(rng: RNG) {
     const c = new Collector();
     const skin = pick(rng, [0xf1c9a5, 0xe0b48c, 0xc68e63, 0x8d5a3b]);
     const cloth = pick(rng, [0x8a3b3b, 0x3b5c8a, 0x5a7a3a, 0x8a6a3a, 0x6a4a7a, 0x3a3a3a, 0xb8865a, 0x2f6b6b]);
@@ -749,7 +823,8 @@ export class World {
       }
       const count = v.id === 'mildvar' ? 24 : 14;
       for (let i = 0; i < count; i++) {
-        const obj = this.makeVillager(rng);
+        const variant = Math.floor(rng() * 8);
+        const obj = this.makeVillager(variant);
         obj.visible = false;
         this.scene.add(obj);
         let curve: THREE.Curve<THREE.Vector3>;
@@ -760,10 +835,12 @@ export class World {
         } else {
           curve = routes[Math.floor(rng() * routes.length)];
         }
+        const id = `villager_${v.id}_${i}`;
         this.walkers.push({
-          obj, curve, len: curve.getLength(), t: rng(), speed: range(rng, 0.85, 1.5), dir: rng() < 0.5 ? -1 : 1,
+          id, obj, curve, len: curve.getLength(), t: rng(), speed: range(rng, 0.85, 1.5), dir: rng() < 0.5 ? -1 : 1,
           offset: range(rng, -1.4, 1.4), phase: rng() * 10, closed, home: v,
         });
+        this.entities.set(id, { id, name: `Citizen of ${v.name}`, role: 'villager', faction: v.name, obj });
       }
     }
     this.stats.villagers = this.walkers.length;
@@ -856,6 +933,9 @@ export class World {
   }
 
   groundHeight(x: number, z: number) {
+    // Pocket interiors have their own flat floor, far from the terrain.
+    const iy = this.interactions?.interiorGroundHeight(x, z);
+    if (iy !== null && iy !== undefined) return iy;
     const bridge = this.spanAt(x, z, bridges);
     if (bridge) return bridge.deckY + 0.22;
     const platform = this.spanAt(x, z, platforms);
@@ -877,12 +957,14 @@ export class World {
   }
 
   isWalkable(x: number, z: number) {
+    if (this.interactions?.interiorGroundHeight(x, z) !== null) return true;
     if (Math.abs(x) > WORLD_HALF - 200 || Math.abs(z) > WORLD_HALF - 200) return false;
     if (this.onSpan(x, z)) return true;
     return waterDist(x, z) > riverHalfWidth(x, z) + 0.8;
   }
 
   resolveCollision(pos: THREE.Vector3, radius: number) {
+    if (this.interactions?.resolveInteriorCollision(pos, radius)) return;
     for (const o of this.obbGrid.query(pos.x, pos.z)) {
       const dx = pos.x - o.cx;
       const dz = pos.z - o.cz;
@@ -923,17 +1005,21 @@ export class World {
     const loc = ALL_LOCATIONS.find((x) => x.id === id);
     if (!loc) return null;
     if (loc.type === 'garrison') {
-      const gy = this.groundHeight(-1550, -1700);
-      return { x: -1550, z: -1700, y: gy + 1.7, yaw: -Math.PI / 2, v: loc };
+      const x = FORT.x + 50;
+      const z = FORT.z;
+      return { x, z, y: this.groundHeight(x, z) + 1.7, yaw: -Math.PI / 2, v: loc };
     } else if (loc.type === 'lake') {
-      const ly = this.groundHeight(2340, -1840);
-      return { x: 2340, z: -1840, y: ly + 1.7, yaw: Math.PI * 0.9, v: loc };
+      const x = LAKE.x + 40;
+      const z = LAKE.z + LAKE.r + 6;
+      return { x, z, y: this.groundHeight(x, z) + 1.7, yaw: Math.PI * 0.9, v: loc };
     } else if (loc.type === 'forest') {
-      const fy = this.groundHeight(-2385, -2480);
-      return { x: -2385, z: -2480, y: fy + 1.7, yaw: 0.5, v: loc };
+      const x = loc.x + 15;
+      const z = loc.z + 20;
+      return { x, z, y: this.groundHeight(x, z) + 1.7, yaw: 0.5, v: loc };
     } else if (loc.type === 'plains') {
-      const py = this.groundHeight(2110, 2420);
-      return { x: 2110, z: 2420, y: py + 1.7, yaw: 0.8, v: loc };
+      const x = loc.x + 10;
+      const z = loc.z + 20;
+      return { x, z, y: this.groundHeight(x, z) + 1.7, yaw: 0.8, v: loc };
     } else if (loc.type === 'watchtower') {
       const wy = this.groundHeight(loc.x + 8, loc.z + 8);
       return { x: loc.x + 8, z: loc.z + 8, y: wy + 1.7, yaw: 0, v: loc };
@@ -1047,7 +1133,8 @@ export class World {
     // Soldier animations (Watchmen, guards, archers)
     for (const s of this.soldiers) {
       s.obj.rotation.y = s.baseRot + Math.sin(this.time * 0.8 + s.phase) * 0.12;
-      s.obj.position.y += Math.sin(this.time * 2.8 + s.phase) * 0.0006;
+      // absolute, not +=: the old version accumulated a slow vertical drift
+      s.obj.position.y = s.baseY + Math.sin(this.time * 2.8 + s.phase) * 0.012;
     }
 
     const tan = new THREE.Vector3();
@@ -1119,8 +1206,20 @@ export class World {
 
     this.birds.update(this.time, cam, (x, z) => Math.max(terrainHeight(x, z), 0));
 
+    // Interaction registry: O(1) spatial hash + view cone, no raycasts.
+    this.interactions.update(camera);
+
     // ---- distance culling & shadow-caster gating (GPU budget) ----
     const vs = this.viewScale;
+    for (const w of this.wilderness) {
+      const d = Math.hypot(cam.x - w.cx, cam.z - w.cz) - w.radius;
+      w.group.visible = d < 2700 * vs;
+      const sh = d < 1100;
+      if (sh !== w.shadow) {
+        w.shadow = sh;
+        for (const m of w.meshes) m.castShadow = sh;
+      }
+    }
     for (const s of this.settlements) {
       const d = Math.hypot(cam.x - s.v.x, cam.z - s.v.z) - s.radius;
       // landmarks of the realm stay visible across the whole map; only shadows gate

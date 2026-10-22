@@ -4,6 +4,7 @@ import { Engine, Quality, FrameStats } from './three/engine';
 import type { Mode } from './three/controls';
 import { cn } from './utils/cn';
 import { ALL_LOCATIONS, SETTLEMENT_SPECS, roads, riverChains, farms, bridges } from './three/world/land';
+import type { Interactable, DialogueEvent, Quest } from './three/world/interactables';
 import { Minimap } from './components/Minimap';
 
 const PX_PER_DEG = 2.4;
@@ -87,7 +88,7 @@ const QUALITIES: { id: Quality; label: string }[] = [
   { id: 'ultra', label: 'Ultra' },
 ];
 
-const WORLD_KM = 16;
+const WORLD_KM = 8;
 
 function hourLabel(h: number) {
   const hh = Math.floor(h);
@@ -102,6 +103,14 @@ const place = (x: number, z: number) => ({
 });
 
 const mapPoint = (x: number, z: number) => `${(50 + x / (WORLD_KM * 10)).toFixed(2)},${(50 + z / (WORLD_KM * 10)).toFixed(2)}`;
+
+const INTERIOR_LABEL: Record<string, string> = {
+  cathedral: 'Cathedral of St. Alder',
+  longhouse: 'Great Mead-Hall',
+  keep: 'Garrison War Room',
+  tavern: 'The Golden Flagon',
+  cottage: 'Homestead Hearth',
+};
 
 const fmt = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(0)}k` : `${n}`);
 
@@ -123,6 +132,15 @@ export default function App() {
   const [pos, setPos] = useState({ x: 0, z: 0 });
   const [near, setNear] = useState(SETTLEMENT_SPECS[0].name);
   const [waterPhysicsOn, setWaterPhysicsOn] = useState(true);
+  const [interactPrompt, setInteractPrompt] = useState<Interactable | null>(null);
+  const [dialogue, setDialogue] = useState<DialogueEvent | null>(null);
+  const [quests, setQuests] = useState<Quest[]>([]);
+  const [questOpen, setQuestOpen] = useState(false);
+  const nearLabelRef = useRef<HTMLSpanElement>(null);
+  const coordRef = useRef<HTMLDivElement>(null);
+  const nearNameRef = useRef('');
+  const mapOpenRef = useRef(false);
+  mapOpenRef.current = mapOpen;
 
   const toggleWaterPhysics = useCallback(() => setWaterPhysicsOn((prev) => !prev), []);
   useEffect(() => {
@@ -152,6 +170,13 @@ export default function App() {
       engineRef.current = engine;
       engine.controls.onLockChange = setLocked;
       engine.onStats = setFrame;
+      engine.world.interactions.onTargetChange = setInteractPrompt;
+      engine.world.interactions.onQuestChange = setQuests;
+      engine.world.interactions.onDialogue = (d) => {
+        setDialogue(d);
+        if (d) engine?.controls.unlock();
+      };
+      setQuests([...engine.world.interactions.quests]);
       engine.setHour(18.2);
       engine.world.onDiscovery((name) => {
         const v = ALL_LOCATIONS.find((s) => s.name === name);
@@ -171,21 +196,52 @@ export default function App() {
     };
   }, []);
 
+  /**
+   * Location readouts are written straight into the DOM from the render loop
+   * (like <Compass/>), so React re-renders only when the nearest settlement
+   * actually changes instead of 2.5 times per second.
+   */
   useEffect(() => {
-    const i = window.setInterval(() => {
+    let raf = 0;
+    let last = 0;
+    const tick = (now: number) => {
+      raf = requestAnimationFrame(tick);
+      if (now - last < 200) return;
+      last = now;
       const e = engineRef.current;
       if (!e) return;
       const p = e.camera.position;
-      setPos({ x: p.x, z: p.z });
-      setNear(e.world.nearestSettlement(p.x, p.z).v.name);
-    }, 400);
-    return () => window.clearInterval(i);
+      const interior = e.world.interactions?.currentInterior;
+      const name = interior ? INTERIOR_LABEL[interior] : e.world.nearestSettlement(p.x, p.z).v.name;
+      if (name !== nearNameRef.current) {
+        nearNameRef.current = name;
+        if (nearLabelRef.current) nearLabelRef.current.textContent = name;
+        setNear(name);
+      }
+      if (coordRef.current) {
+        coordRef.current.textContent = interior
+          ? 'Underground · pocket interior'
+          : `${p.x >= 0 ? 'E' : 'W'} ${Math.abs(p.x / 1000).toFixed(2)} km · ${p.z >= 0 ? 'S' : 'N'} ${Math.abs(p.z / 1000).toFixed(2)} km`;
+      }
+      if (mapOpenRef.current) setPos({ x: p.x, z: p.z });
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
   }, []);
 
   const changeMode = useCallback((m: Mode) => {
     setMode(m);
     const e = engineRef.current;
     if (!e) return;
+    // Leaving a pocket interior for a camera mode that cannot be indoors:
+    // step back out to the doorstep first.
+    const inside = e.world.interactions.currentInterior;
+    if (inside && m !== 'stroll') {
+      const r = e.world.interactions.returnState;
+      e.world.interactions.leaveInterior();
+      e.setMode('stroll');
+      if (r) e.controls.teleport(r.x, r.z, r.y, r.yaw);
+    }
     if (m === 'ride') {
       e.controls.boardCarriage(Math.floor(Math.random() * Math.max(1, e.world.carriages.length)));
       e.setTilt(e.tilt);
@@ -198,6 +254,7 @@ export default function App() {
   const travel = useCallback((id: string) => {
     const e = engineRef.current;
     if (!e) return;
+    if (e.world.interactions.currentInterior) e.world.interactions.leaveInterior();
     const t = e.world.travelTarget(id);
     if (!t) return;
     e.setMode('stroll');
@@ -217,10 +274,31 @@ export default function App() {
       if (ev.code === 'KeyT') setTilt((t) => !t);
       if (ev.code === 'KeyP') toggleWaterPhysics();
       if (ev.code === 'KeyH') setShowHelp((s) => !s);
+      if (ev.code === 'KeyJ') {
+        const next = !questOpen;
+        setQuestOpen(next);
+        if (next) engineRef.current?.controls.unlock();
+        else if (mode !== 'overview') engineRef.current?.controls.lock();
+      }
+      if (ev.code === 'KeyE') {
+        if (dialogue) {
+          setDialogue(null);
+          engineRef.current?.controls.lock();
+          return;
+        }
+        if (mode === 'stroll' && !questOpen) {
+          const e = engineRef.current;
+          e?.world.interactions.interact((x, z, y, yaw) => e.controls.teleport(x, z, y, yaw));
+        }
+      }
+      if (ev.code === 'Escape') {
+        setDialogue(null);
+        setQuestOpen(false);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [changeMode]);
+  }, [changeMode, dialogue, mode, questOpen]);
 
   useEffect(() => {
     engineRef.current?.setTilt(tilt);
@@ -236,7 +314,7 @@ export default function App() {
     engineRef.current?.applyQuality(q);
   };
 
-  const needsLock = ready && mode !== 'overview' && !locked && !mapOpen;
+  const needsLock = ready && mode !== 'overview' && !locked && !mapOpen && !dialogue && !questOpen;
   const current = MODES.find((m) => m.id === mode)!;
 
   return (
@@ -359,6 +437,7 @@ export default function App() {
             <ul className="mt-2 space-y-1 text-[11px] text-white/60">
               {mode === 'overview' && <li>• Press <kbd className="rounded bg-white/10 px-1">M</kbd> for the full realm map or click pins to fast travel</li>}
               {mode === 'stroll' && <li>• Stroll through Mildvar, Fort Ironspire garrison, or Lake Eldermere</li>}
+              {mode === 'stroll' && <li>• Look for <kbd className="rounded bg-white/10 px-1">E</kbd> prompts at doors, shrines &amp; noticeboards · <kbd className="rounded bg-white/10 px-1">J</kbd> opens your journal</li>}
               {mode === 'fly' && <li>• Fly over the Whispering Weald forest & Golden Mead grassland</li>}
               {mode === 'ride' && <li>• Ride with the carriage driver · <kbd className="rounded bg-white/10 px-1">2</kbd> to dismount</li>}
               <li>• <kbd className="rounded bg-white/10 px-1">P</kbd> toggles Water Physics · <kbd className="rounded bg-white/10 px-1">H</kbd> toggles this panel</li>
@@ -376,12 +455,104 @@ export default function App() {
 
       {/* Location readout */}
       <div className="pointer-events-none absolute bottom-5 right-5 z-30 rounded-xl border border-white/10 bg-black/40 px-4 py-2 text-right text-[11px] backdrop-blur-md">
-        <div className="font-serif text-sm text-amber-100">Near {near}</div>
-        <div className="font-mono text-white/45">
+        <div className="font-serif text-sm text-amber-100">Near <span ref={nearLabelRef}>{near}</span></div>
+        <div ref={coordRef} className="font-mono text-white/45">
           {pos.x >= 0 ? 'E' : 'W'} {Math.abs(pos.x / 1000).toFixed(2)} km · {pos.z >= 0 ? 'S' : 'N'} {Math.abs(pos.z / 1000).toFixed(2)} km
         </div>
         <div className="mt-1 text-white/40">Discovered {discovered.length}/{ALL_LOCATIONS.length} realm regions</div>
       </div>
+
+      {/* [E] world interaction prompt */}
+      {interactPrompt && mode === 'stroll' && !dialogue && !questOpen && (
+        <div className="pointer-events-none absolute left-1/2 top-[54%] z-30 -translate-x-1/2 rounded-xl border border-amber-300/40 bg-black/75 px-4 py-2 text-center shadow-xl backdrop-blur-md">
+          <div className="font-serif text-[11px] text-amber-200/80">{interactPrompt.title}</div>
+          <div className="mt-0.5 flex items-center justify-center gap-1.5 text-sm font-semibold text-white">
+            <kbd className="rounded bg-amber-400 px-1.5 py-0.5 font-mono text-xs text-amber-950">E</kbd>
+            <span>{interactPrompt.prompt}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Quest tracker */}
+      {ready && quests.length > 0 && (
+        <div className="pointer-events-none absolute left-5 top-[86px] z-20 w-[300px] rounded-xl border border-white/10 bg-black/45 p-3 backdrop-blur-md">
+          <div className="flex items-center justify-between text-[10px] uppercase tracking-widest text-amber-200/80">
+            <span>Quest log</span>
+            <span className="font-mono text-white/40">J</span>
+          </div>
+          {quests.map((q) => (
+            <div key={q.id} className="mt-2 border-t border-white/10 pt-1.5">
+              <div className="font-serif text-xs font-semibold text-amber-100">
+                {q.status === 'completed' ? '✓ ' : '◆ '}
+                {q.title}
+                <span className="ml-1 font-mono text-[9px] text-white/35">{Math.min(q.stepIndex + 1, q.steps.length)}/{q.steps.length}</span>
+              </div>
+              <div className="mt-0.5 text-[11px] leading-snug text-white/65">
+                {q.status === 'completed' ? q.rewardText : q.steps[q.stepIndex]?.description}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* NPC dialogue */}
+      {dialogue && (
+        <div className="absolute inset-x-0 bottom-10 z-50 mx-auto w-[min(92vw,620px)] rounded-2xl border border-amber-300/40 bg-[#12100c]/95 p-6 shadow-2xl backdrop-blur-md">
+          {dialogue.questUpdate && (
+            <div className="mb-2 inline-block rounded-full bg-amber-400/20 px-3 py-0.5 text-[11px] font-semibold text-amber-300">
+              {dialogue.questUpdate}
+            </div>
+          )}
+          <h3 className="font-serif text-xl text-amber-100">{dialogue.speaker}</h3>
+          <div className="mt-0.5 text-[10px] uppercase tracking-[0.2em] text-amber-200/50">{dialogue.title}</div>
+          <div className="mt-3 space-y-2 text-sm leading-relaxed text-white/85">
+            {dialogue.lines.map((line, idx) => <p key={idx}>{line}</p>)}
+          </div>
+          <div className="mt-4 flex justify-end">
+            <button
+              onClick={() => { setDialogue(null); engineRef.current?.controls.lock(); }}
+              className="rounded-lg bg-amber-400 px-4 py-1.5 text-xs font-semibold text-amber-950 hover:bg-amber-300"
+            >
+              Continue [E]
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Journal */}
+      {questOpen && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" onClick={() => setQuestOpen(false)}>
+          <div className="w-[min(94vw,720px)] rounded-2xl border border-amber-200/25 bg-[#12100c]/97 p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 flex items-end justify-between border-b border-white/10 pb-2">
+              <div>
+                <h2 className="font-serif text-2xl text-amber-100">Quest Journal</h2>
+                <p className="text-[11px] text-amber-100/50">Doors with a prompt lead to interiors; every hall keeps a named NPC.</p>
+              </div>
+              <button onClick={() => setQuestOpen(false)} className="rounded-lg border border-white/15 px-3 py-1 text-sm text-white/70 hover:bg-white/10">Close [J]</button>
+            </div>
+            {quests.map((q) => (
+              <div key={q.id} className="mb-4 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-serif text-base text-amber-100">{q.title}</h3>
+                  <span className={cn('rounded-full px-2 py-0.5 text-[10px] uppercase tracking-widest', q.status === 'completed' ? 'bg-emerald-400/20 text-emerald-300' : q.status === 'active' ? 'bg-amber-400/20 text-amber-300' : 'bg-white/10 text-white/60')}>
+                    {q.status}
+                  </span>
+                </div>
+                <div className="text-[11px] text-white/45">Given by {q.giver} · {q.village}</div>
+                <ol className="mt-2 space-y-1.5">
+                  {q.steps.map((step, i) => (
+                    <li key={step.id} className={cn('flex gap-2 text-xs', step.completed ? 'text-white/35 line-through' : i === q.stepIndex && q.status === 'active' ? 'text-amber-100' : 'text-white/60')}>
+                      <span>{step.completed ? '✓' : i === q.stepIndex && q.status === 'active' ? '◆' : '○'}</span>
+                      <span>{step.description}</span>
+                    </li>
+                  ))}
+                </ol>
+                <div className="mt-2 text-[11px] text-amber-200/60">Reward: {q.rewardText}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {toast && (
         <div className="pointer-events-none absolute left-1/2 top-24 z-40 -translate-x-1/2 rounded-2xl border border-amber-300/40 bg-black/70 px-6 py-3 text-center shadow-2xl backdrop-blur-md">

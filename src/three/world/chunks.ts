@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { WORLD_HALF, terrainHeight, riverQuery, riverChains, Road, RoadKind } from './land';
+import { WORLD_HALF, terrainHeight, riverQuery, riverChains, Road, RoadKind, type RiverHit } from './land';
 import { TextureSet } from '../textures';
 
 const C_GRASS1 = new THREE.Color(0x5d8f38);
@@ -11,8 +11,12 @@ const C_ROCK = new THREE.Color(0x8b877e);
 const C_SNOW = new THREE.Color(0xf2f4f8);
 const C_BANK = new THREE.Color(0x8a7a52);
 
-/** Ground colour at a point: biome tint, rock, snow, river banks. */
-export function groundColor(x: number, z: number, h: number, out: THREE.Color) {
+/**
+ * Ground colour at a point: biome tint, rock, snow, river banks.
+ * `hit` lets a chunk pass in the river query it already performed for the
+ * height, instead of projecting onto river segments a second time.
+ */
+export function groundColor(x: number, z: number, h: number, out: THREE.Color, hit?: RiverHit) {
   const moist = (Math.sin(x * 0.0011) + Math.cos(z * 0.0009)) * 0.5;
   out.copy(C_GRASS1).lerp(C_GRASS2, 0.5 + moist * 0.5);
   out.lerp(C_MOOR, Math.max(0, Math.min(1, (-x - 1200) / 3200)) * 0.5);
@@ -20,7 +24,7 @@ export function groundColor(x: number, z: number, h: number, out: THREE.Color) {
   out.lerp(C_ARABLE, Math.max(0, Math.min(1, (z - 1100) / 3000)) * 0.42);
   out.lerp(C_ROCK, Math.min(1, Math.max(0, (h - 130) / 220)));
   out.lerp(C_SNOW, Math.min(1, Math.max(0, (h - 430) / 180)));
-  const q = riverQuery(x, z);
+  const q = hit ?? riverQuery(x, z);
   if (q.d < q.half + 20) out.lerp(C_BANK, Math.min(1, 1 - (q.d - q.half) / 20) * 0.8);
 }
 
@@ -61,7 +65,7 @@ function buildChunkGeometry(cx: number, cz: number, size: number, segs: number, 
       nor[v * 3 + 2] = nz * il;
       uv[v * 2] = x / 6;
       uv[v * 2 + 1] = z / 6;
-      groundColor(x, z, h, c);
+      groundColor(x, z, h, c, riverQuery(x, z));
       col[v * 3] = c.r;
       col[v * 3 + 1] = c.g;
       col[v * 3 + 2] = c.b;
@@ -172,7 +176,7 @@ export class TerrainSystem {
       const h = terrainHeight(x, z);
       pos.setY(i, h);
       uv.setXY(i, x / 24, z / 24);
-      groundColor(x, z, h, c);
+      groundColor(x, z, h, c, riverQuery(x, z));
       colors[i * 3] = c.r;
       colors[i * 3 + 1] = c.g;
       colors[i * 3 + 2] = c.b;
@@ -196,12 +200,19 @@ export class TerrainSystem {
     this.group.add(mesh);
   }
 
-  /** Build every chunk within `radius` right now (used for fast travel / spawn). */
+  /**
+   * Build the arrival ring immediately (fast travel / spawn / doors).
+   *
+   * Building the whole keepRadius synchronously is a 200–500 ms freeze. The
+   * far-terrain shader sinks itself only beyond ~900 m, so we only need the
+   * coarse mesh underfoot for the first frames; the rest streams in through
+   * update() a couple of chunks at a time.
+   */
   prewarm(x: number, z: number, radius = 700) {
     const S = this.chunkSize;
     const cx0 = Math.round(x / S);
     const cz0 = Math.round(z / S);
-    const coverage = Math.max(radius, this.keepRadius);
+    const coverage = Math.min(Math.max(radius, 600), 900);
     const R = Math.ceil(coverage / S);
     for (let cz = cz0 - R; cz <= cz0 + R; cz++) {
       for (let cx = cx0 - R; cx <= cx0 + R; cx++) {
@@ -230,7 +241,9 @@ export class TerrainSystem {
     }
     if (pending.length) {
       pending.sort((a, b) => a[2] - b[2]);
-      const budget = pending.length > 8 ? 5 : 2;
+      // Keep the per-frame budget small: each chunk evaluates ~3.7k terrain
+      // samples, so 5 in one frame is a visible hitch.
+      const budget = pending.length > 40 ? 2 : pending.length > 8 ? 3 : 5;
       for (const [cx, cz] of pending.slice(0, budget)) this.makeChunk(cx, cz);
     }
     for (const [key, mesh] of this.chunks) {

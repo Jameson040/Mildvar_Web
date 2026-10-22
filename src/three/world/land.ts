@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { fbm, lerp, smoothstep, clamp } from '../noise';
 import { ParcelRegistry, farmParcels, localCoords, localPoint, sampleFootprint, type Footprint } from './placement';
 
-export const WORLD_HALF = 8000;
+export const WORLD_HALF = 4000;
 export const RIVER_BANK = 11;
 
 /* ------------------------------------------------------------------ *
@@ -13,10 +13,10 @@ export function landscape(x: number, z: number): number {
   let h = (fbm(x * 0.00034 + 11, z * 0.00034 + 5, 4) - 0.4) * 145;
   h += (fbm(x * 0.0015 + 3, z * 0.0015 + 9, 3) - 0.5) * 40;
   h += (fbm(x * 0.0075 + 7, z * 0.0075 + 1, 2) - 0.5) * 7;
-  const mtn = smoothstep(5600, 7400, r);
+  const mtn = smoothstep(3300, 4400, r);
   if (mtn > 0) {
     const ridge = 1 - Math.abs(fbm(x * 0.00042 + 21, z * 0.00042 + 13, 3) * 2 - 1);
-    h += Math.pow(ridge, 1.5) * 780 * mtn + mtn * 140;
+    h += Math.pow(ridge, 1.5) * 560 * mtn + mtn * 110;
   }
   return h;
 }
@@ -381,19 +381,44 @@ export interface SettlementSpec {
 
 export const SETTLEMENT_SPECS: SettlementSpec[] = [
   { id: 'mildvar', name: 'Mildvar', title: 'Market Town of the Wyle', blurb: 'Tiered roofs crowd a busy market square beneath the bells of St. Alder.', x: 0, z: 0, r: 118, landmark: 'cathedral', farms: 6, emoji: '🏰', type: 'village' },
-  { id: 'norvik', name: 'Norvik', title: 'Pinehold of the North', blurb: 'Smoke-heavy longhouse halls beneath the fir slopes of the Norbeck.', x: 0, z: -5000, r: 80, landmark: 'longhouse', farms: 4, emoji: '🌲', type: 'village' },
-  { id: 'eastreach', name: 'Eastreach', title: 'River Port on the Wyle', blurb: 'Thatched cottages lean over the water where barges unload at the staithe.', x: 5000, z: 0, r: 74, landmark: 'harbor', farms: 4, emoji: '⚓', type: 'village' },
-  { id: 'sudholm', name: 'Sudholm', title: 'Granary of the South', blurb: 'Golden barley, creaking windmills and wide hedge-lined fields.', x: 0, z: 5000, r: 88, landmark: 'mill', farms: 8, emoji: '🌾', type: 'village' },
-  { id: 'westmoor', name: 'Westmoor', title: 'Garrison of the Moor', blurb: 'Grey granite keeps watch over heather, standing stones and fog.', x: -5000, z: 0, r: 70, landmark: 'keep', farms: 3, emoji: '⛰️', type: 'village' },
+  { id: 'norvik', name: 'Norvik', title: 'Pinehold of the North', blurb: 'Smoke-heavy longhouse halls beneath the fir slopes of the Norbeck.', x: 0, z: -2600, r: 80, landmark: 'longhouse', farms: 4, emoji: '🌲', type: 'village' },
+  { id: 'eastreach', name: 'Eastreach', title: 'River Port on the Wyle', blurb: 'Thatched cottages lean over the water where barges unload at the staithe.', x: 2600, z: 0, r: 74, landmark: 'harbor', farms: 4, emoji: '⚓', type: 'village' },
+  { id: 'sudholm', name: 'Sudholm', title: 'Granary of the South', blurb: 'Golden barley, creaking windmills and wide hedge-lined fields.', x: 0, z: 2600, r: 88, landmark: 'mill', farms: 8, emoji: '🌾', type: 'village' },
+  { id: 'westmoor', name: 'Westmoor', title: 'Garrison of the Moor', blurb: 'Grey granite keeps watch over heather, standing stones and fog.', x: -2600, z: 0, r: 70, landmark: 'keep', farms: 3, emoji: '⛰️', type: 'village' },
+];
+
+/**
+ * Watchtowers are surveyed here, once, so the map pins (WILDERNESS_SPECS),
+ * the discovery system and the meshes in wilderness.ts can never drift apart.
+ * They sit ~halfway along each highway, inside the valley ring.
+ */
+export interface WatchtowerSpec {
+  id: string;
+  name: string;
+  title: string;
+  blurb: string;
+  x: number;
+  z: number;
+  rot: number;
+}
+
+export const WATCHTOWER_SITES: WatchtowerSpec[] = [
+  { id: 'norbeck_watch', name: 'Norbeck Watch', title: 'Norvik Highway Sentinel', blurb: 'North road stone watchtower with a signal brazier overlooking the pass to Norvik.', x: 70, z: -1350, rot: 0.1 },
+  { id: 'wyle_gate', name: 'Wyle Gate Outpost', title: 'Eastern Border Watch', blurb: 'East road highway watchtower guarding the merchant river route to Eastreach.', x: 1450, z: 150, rot: -1.5 },
+  { id: 'highridge_post', name: 'Highridge Post', title: 'Southern Pass Watch', blurb: 'A wind-scoured watch above the Sudholm grain road, beacon always dry.', x: -60, z: 1350, rot: 3.1 },
+  { id: 'moorland_bastion', name: 'Moorland Bastion', title: 'Western Frontier Watch', blurb: 'Grey stone bastion watching the heather road out to Westmoor.', x: -1350, z: 30, rot: 1.6 },
+  { id: 'eldermere_beacon', name: 'Eldermere Beacon', title: 'Lake Overlook', blurb: 'Signal tower above Lake Eldermere, relaying barge traffic down the Wyle.', x: 2050, z: -1780, rot: 2.2 },
 ];
 
 export const WILDERNESS_SPECS: SettlementSpec[] = [
   { id: 'fort_ironspire', name: 'Fort Ironspire', title: 'Northern Defense Garrison', blurb: 'Fortified stone & timber garrison housing 100 soldiers, watchtowers, and training yards.', x: -1600, z: -1700, r: 60, landmark: 'keep', farms: 0, emoji: '⚔️', type: 'garrison' },
   { id: 'lake_eldermere', name: 'Lake Eldermere', title: 'Silvermere Fishing Waters', blurb: 'A scenic deep freshwater lake with fishing piers, boats, and a sacred moon islet.', x: 2300, z: -2100, r: 180, landmark: 'harbor', farms: 0, emoji: '⛵', type: 'lake' },
-  { id: 'whispering_weald', name: 'Whispering Weald', title: 'Ancient Titan Forest', blurb: 'Towering ancient oaks, mossy megaliths, and a woodcutter cabin hidden in the deep canopy.', x: -2400, z: -2500, r: 350, landmark: 'longhouse', farms: 0, emoji: '🌳', type: 'forest' },
-  { id: 'golden_mead', name: 'The Golden Mead', title: 'Sunvale Steppe & Pastures', blurb: 'Vast rolling wildflower grasslands with livestock folds and shepherd hills.', x: 2100, z: 2400, r: 280, landmark: 'mill', farms: 0, emoji: '🐑', type: 'plains' },
-  { id: 'norbeck_watch', name: 'Norbeck Watch', title: 'Highway Sentinel', blurb: 'North road stone watchtower with signal brazier overlooking the pass to Norvik.', x: 70, z: -2700, r: 30, landmark: 'keep', farms: 0, emoji: '🛡️', type: 'watchtower' },
-  { id: 'wyle_gate', name: 'Wyle Gate Outpost', title: 'Eastern Border Watch', blurb: 'East road highway watchtower guarding the merchant river route to Eastreach.', x: 2700, z: 50, r: 30, landmark: 'keep', farms: 0, emoji: '🛡️', type: 'watchtower' },
+  { id: 'whispering_weald', name: 'Whispering Weald', title: 'Ancient Titan Forest', blurb: 'Towering ancient oaks, mossy megaliths, and a woodcutter cabin hidden in the deep canopy.', x: -2150, z: -2150, r: 350, landmark: 'longhouse', farms: 0, emoji: '🌳', type: 'forest' },
+  { id: 'golden_mead', name: 'The Golden Mead', title: 'Sunvale Steppe & Pastures', blurb: 'Vast rolling wildflower grasslands with livestock folds and shepherd hills.', x: 1850, z: 2200, r: 280, landmark: 'mill', farms: 0, emoji: '🐑', type: 'plains' },
+  ...WATCHTOWER_SITES.map((w): SettlementSpec => ({
+    id: w.id, name: w.name, title: w.title, blurb: w.blurb,
+    x: w.x, z: w.z, r: 30, landmark: 'keep', farms: 0, emoji: '🛡️', type: 'watchtower',
+  })),
 ];
 
 export const ALL_LOCATIONS: SettlementSpec[] = [...SETTLEMENT_SPECS, ...WILDERNESS_SPECS];

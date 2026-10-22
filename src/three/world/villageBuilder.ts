@@ -10,6 +10,7 @@ import {
 import { VillageDef, FarmDef, Theme, terrainHeight, riverQuery, roadQuery, roadFootprintClear, roadPointAt, roads, nearestRiverPoint, platforms, plazaRadius, addVillageRoad } from './land';
 import { HedgeSeg, FlowerSpec, treeColor } from '../nature';
 import { landUse } from './land';
+import type { InteractionSystem, InteriorKind } from './interactables';
 import { FARM_FIELD_START, FARM_FIELD_GAP, farmFields, localPoint, overlaps, sampleFootprint } from './placement';
 
 export interface TreeSpecOut {
@@ -48,6 +49,8 @@ export interface BuildCtx {
   dynamics: DynamicSpec[];
   plaza(x: number, z: number, rx: number, rz: number): void;
   theme: Theme;
+  /** Registers doors / NPCs / shrines into the spatial interaction layer. */
+  interactions: InteractionSystem;
 }
 
 /** Everything about a village that must be known before terrain is sampled. */
@@ -293,6 +296,19 @@ export function buildVillage(v: VillageDef, plan: VillagePlan, ctx: BuildCtx) {
   const lmY = terrainHeight(lmx, lmz);
   const pushObb = (x: number, z: number, hw: number, hd: number, rot: number) => ctx.obbs.push({ cx: x, cz: z, hw, hd, rot });
 
+  // ---- interaction anchors (registered from the very matrices used to build) ----
+  const addDoor = (id: string, title: string, x: number, y: number, z: number, rot: number, doorZ: number, interior: InteriorKind, doorX = 0) =>
+    ctx.interactions.registerDoor({ id, title, x, y, z, rot, doorZ, doorX, interior });
+
+  ctx.interactions.register({
+    id: `notice_${v.id}`,
+    kind: 'noticeboard',
+    title: `${v.name} Noticeboard`,
+    prompt: `Read the notices of ${v.name}`,
+    pos: new THREE.Vector3(v.x + 6.5, base + 1.4, v.z + 5.5),
+    radius: 3.2,
+  });
+
   if (v.landmark === 'cathedral') {
     for (const o of addChurch(c, mat4(lmx, lmY, lmz, lmRot))) {
       const co = Math.cos(lmRot);
@@ -310,7 +326,21 @@ export function buildVillage(v: VillageDef, plan: VillagePlan, ctx: BuildCtx) {
     }
     addGraveyard(c, mat4(lmx + 16, lmY, lmz + 12, lmRot), rng, 14);
     addShrine(c, mat4(v.x - rx * 1.5, base + 0.05, v.z + rz * 1.3, 0.6));
+    ctx.interactions.register({
+      id: `shrine_${v.id}`,
+      kind: 'shrine',
+      title: `${v.name} Wayshrine`,
+      prompt: 'Touch the wayshrine',
+      pos: new THREE.Vector3(v.x - rx * 1.5, base + 1.2, v.z + rz * 1.3),
+      radius: 2.8,
+    });
+    // Church front tower: door sits at local z = 14.75 (see addChurch).
+    addDoor(`door_church_${v.id}`, 'Cathedral of St. Alder', lmx, lmY, lmz, lmRot, 14.75, 'cathedral');
+    // The town hall's collision box includes its portico and steps (front
+    // face at local z ≈ 9.6), so the trigger sits at the foot of the stairs.
+    addDoor(`door_hall_${v.id}`, `${v.name} Town Hall & Inn`, hx, terrainHeight(hx, hz), hz, hrot, 10.7, 'tavern');
   } else if (v.landmark === 'longhouse') {
+    addDoor(`door_longhouse_${v.id}`, `${v.name} Great Mead-Hall`, lmx, lmY, lmz, lmRot, 5.1, 'longhouse');
     const o = addLonghouse(c, mat4(lmx, lmY, lmz, lmRot), t.roofMat);
     pushObb(lmx, lmz, o.hw, o.hd, lmRot);
     addFlag(c, mat4(lmx + 12, terrainHeight(lmx + 12, lmz), lmz, 0), t.accent);
@@ -329,6 +359,9 @@ export function buildVillage(v: VillageDef, plan: VillagePlan, ctx: BuildCtx) {
     const scz = v.z + v.r * 0.85;
     addStoneCircle(c, mat4(scx, terrainHeight(scx, scz), scz), rng, 11, 12);
   } else if (v.landmark === 'keep') {
+    // addKeep collides as a square circumscribing the round tower (9.45 m to
+    // the player's capsule), so the door trigger stands clear of that box.
+    addDoor(`door_keep_${v.id}`, `${v.name} Keep War Room`, lmx, lmY, lmz, lmRot, 9.2, 'keep');
     const o = addKeep(c, mat4(lmx, lmY, lmz, lmRot));
     pushObb(lmx, lmz, o.hw, o.hd, lmRot);
     addFlag(c, mat4(lmx, lmY + o.topY, lmz), 0x8a2f2f);
@@ -356,6 +389,22 @@ export function buildVillage(v: VillageDef, plan: VillagePlan, ctx: BuildCtx) {
     ctx.dynamics.push({ kind: 'mill', x: w2x, y: terrainHeight(w2x, w2z) + o2.sailY, z: w2z, rot: lmRot + 0.7, scale: 0.85, village: v.id });
   } else if (v.landmark === 'harbor' && plan.harbor) {
     buildHarbor(v, ctx, plan.harbor);
+    const hp = plan.harbor;
+    // The harbour has no enterable building, so its anchor is the master's
+    // ledger on the quay rather than a door that leads nowhere.
+    ctx.interactions.register({
+      id: `ledger_${v.id}`,
+      kind: 'noticeboard',
+      title: `${v.name} Harbour Ledger`,
+      prompt: 'Read the harbour ledger',
+      pos: new THREE.Vector3(hp.qx, terrainHeight(hp.qx, hp.qz) + 1.4, hp.qz),
+      radius: 3.2,
+      lines: [
+        `${v.name} staithe — cargo ledger, season of the Wyle.`,
+        'Three barges upriver from Lake Eldermere; one overdue with the tide.',
+        'The harbour master notes the inn in the market square keeps rooms and rumour both.',
+      ],
+    });
   }
 
   /* ---------- wells, troughs, signposts ---------- */
@@ -385,6 +434,7 @@ export function buildVillage(v: VillageDef, plan: VillagePlan, ctx: BuildCtx) {
   const ringR = Math.max(rx, rz) + 9;
   let a = rng() * 0.5;
   let guard = 0;
+  let houseDoor = 0;
   while (a < Math.PI * 2 && guard++ < 200) {
     const opts = randomHouseOpts(rng, t.scale * 0.95, t);
     opts.ridgeAlongFront = rng() < 0.8;
@@ -402,6 +452,10 @@ export function buildVillage(v: VillageDef, plan: VillagePlan, ctx: BuildCtx) {
       ctx.obbs.push(o);
       addHouseFrontage(ctx, o, opts, gap);
       garden(ctx, mat4(x, gy, z, rot), rot, opts, gap);
+      if (houseDoor % 3 === 0) {
+        addDoor(`door_house_${v.id}_${houseDoor}`, `${v.name} Cottage`, x, gy - 0.05, z, rot, opts.d / 2 + 0.45, 'cottage', houseDoorX(opts.w));
+      }
+      houseDoor++;
     }
     a += (opts.w + range(rng, 0.8, 2.6)) / R;
   }
@@ -430,6 +484,10 @@ export function buildVillage(v: VillageDef, plan: VillagePlan, ctx: BuildCtx) {
           ctx.obbs.push(o);
           addHouseFrontage(ctx, o, opts, gap);
           garden(ctx, mat4(x, gy, z, rot), rot, opts, gap);
+          if (houseDoor % 3 === 0) {
+            addDoor(`door_house_${v.id}_${houseDoor}`, `${v.name} Cottage`, x, gy - 0.05, z, rot, opts.d / 2 + 0.45, 'cottage', houseDoorX(opts.w));
+          }
+          houseDoor++;
           if (rng() < 0.14) {
             const lx = x - tan.z * side * (off + 3);
             const lz = z + tan.x * side * (off + 3);

@@ -15,10 +15,20 @@ export interface NatureTile {
   cx: number;
   cz: number;
   near: THREE.Group;
-  far: THREE.Group;
   casters: THREE.InstancedMesh[];
   shadow: boolean;
   lod: 0 | 1 | 2;
+}
+
+/**
+ * Every tree outside the near-LOD bubble, drawn from three world-wide instanced
+ * meshes instead of two meshes per tile. Per-tile far meshes cost ~194 draw
+ * calls to draw 8-triangle trees; this costs 3.
+ */
+export interface FarForest {
+  meshes: THREE.InstancedMesh[];
+  /** Rebuild the visible set. `hidden` returns true for tiles drawn at near LOD. */
+  update(hidden: (x: number, z: number) => boolean): void;
 }
 
 function jitter(g: THREE.BufferGeometry, amount: number, rng: RNG) {
@@ -37,6 +47,7 @@ function jitter(g: THREE.BufferGeometry, amount: number, rng: RNG) {
 export interface NatureSet {
   group: THREE.Group;
   tiles: NatureTile[];
+  far: FarForest;
   stats: { round: number; conifer: number; rocks: number; bushes: number };
 }
 
@@ -90,7 +101,6 @@ export function buildNature(items: ScatterItem[], rng: RNG, tileSize = 1200): Na
   for (const [key, list] of buckets) {
     const [kx, kz] = key.split(',').map(Number);
     const near = new THREE.Group();
-    const far = new THREE.Group();
     const casters: THREE.InstancedMesh[] = [];
     const byKind = (k: ScatterItem['kind']) => list.filter((i) => i.kind === k);
     const round = byKind('round');
@@ -130,16 +140,57 @@ export function buildNature(items: ScatterItem[], rng: RNG, tileSize = 1200): Na
     make(near, bushGeo, leafMat, bushes, (i) => i.color, false);
     make(near, stumpGeo, trunkMat, stumps, () => new THREE.Color(0x6b4f33), false);
 
-    make(far, farCanopy, leafMat, round, (i) => i.color.clone().multiplyScalar(0.92), false);
-    make(far, farCone, leafMat, conifer, (i) => i.color.clone().multiplyScalar(0.95), false);
-    make(far, rockGeo, rockMat, rocks.filter((r) => r.scale > 1.4), (i) => i.color, false);
-
-    far.visible = false;
     group.add(near);
-    group.add(far);
-    tiles.push({ cx: kx * tileSize, cz: kz * tileSize, near, far, casters, shadow: false, lod: 0 });
+    tiles.push({ cx: kx * tileSize, cz: kz * tileSize, near, casters, shadow: false, lod: 0 });
   }
-  return { group, tiles, stats };
+
+  /* --- the whole world's distant trees, in three draw calls --- */
+  const farRound = items.filter((i) => i.kind === 'round');
+  const farConifer = items.filter((i) => i.kind === 'conifer');
+  const farRocks = items.filter((i) => i.kind === 'rock' && i.scale > 1.4);
+  const farCanopyMesh = new THREE.InstancedMesh(farCanopy, leafMat, Math.max(1, farRound.length));
+  const farConeMesh = new THREE.InstancedMesh(farCone, leafMat, Math.max(1, farConifer.length));
+  const farRockMesh = new THREE.InstancedMesh(rockGeo, rockMat, Math.max(1, farRocks.length));
+  const farMeshes = [farCanopyMesh, farConeMesh, farRockMesh];
+  for (const m of farMeshes) {
+    m.castShadow = false;
+    m.receiveShadow = true;
+    m.frustumCulled = false; // one batch covering the realm; culling is by tile below
+    m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    group.add(m);
+  }
+
+  const far = {
+    kind: 'far',
+    meshes: farMeshes,
+    update(hidden: (x: number, z: number) => boolean) {
+      const fill = (mesh: THREE.InstancedMesh, list: ScatterItem[], tint: number) => {
+        let n = 0;
+        const c = new THREE.Color();
+        for (const it of list) {
+          if (hidden(it.x, it.z)) continue;
+          dummy.position.set(it.x, it.y, it.z);
+          dummy.rotation.set(0, it.rot, 0);
+          dummy.scale.set(it.scale, it.scale, it.scale);
+          dummy.updateMatrix();
+          mesh.setMatrixAt(n, dummy.matrix);
+          mesh.setColorAt(n, c.copy(it.color).multiplyScalar(tint));
+          n++;
+        }
+        mesh.count = n;
+        mesh.visible = n > 0;
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      };
+      fill(farCanopyMesh, farRound, 0.92);
+      fill(farConeMesh, farConifer, 0.95);
+      fill(farRockMesh, farRocks, 1);
+    },
+  };
+  // start fully populated; the world rebuilds it as tiles enter the near bubble
+  far.update(() => false);
+
+  return { group, tiles, far, stats };
 }
 
 /** Circling birds around each settlement — cheap instanced wings for atmosphere. */

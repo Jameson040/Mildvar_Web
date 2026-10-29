@@ -6,7 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify": "npx --yes tsx@4 scripts/verify-world.ts",
+    "render:houses": "npx --yes tsx@4 scripts/render-catalog.ts",
+    "render:fronts": "FRONT=1 npx --yes tsx@4 scripts/render-catalog.ts",
+    "render:village": "VILLAGE=1 npx --yes tsx@4 scripts/render-catalog.ts",
+    "render:roads": "npx --yes tsx@4 scripts/render-roads.ts",
+    "audit": "npx --yes tsx@4 scripts/audit-budget.ts"
   },
   "dependencies": {
     "@types/three": "^0.186.0",

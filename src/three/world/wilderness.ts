@@ -6,7 +6,8 @@ import {
   addBarn, addWatchtower, addDock, addBoat, addFence, addCrateCluster,
   addSignpost, addTrough, addWoodpile, addTent, addShrine, addStoneCircle, addHaystack, addFlag
 } from './structures';
-import { terrainHeight, LAKE, FORT, platforms } from './land';
+import { terrainHeight, LAKE, FORT, platforms, WATCHTOWER_SITES, type WatchtowerSpec } from './land';
+import type { InteractionSystem } from './interactables';
 
 export interface WildernessCtx {
   c: Collector;
@@ -15,6 +16,7 @@ export interface WildernessCtx {
   trees: { x: number; z: number; scale: number; kind: 'round' | 'conifer'; color: THREE.Color }[];
   lamps: { pos: THREE.Vector3; light: boolean }[];
   soldierPatrols: { x: number; y: number; z: number; rot: number; type: 'guard' | 'archer' | 'officer' }[];
+  interactions: InteractionSystem;
 }
 
 /* ================================================================== *
@@ -74,10 +76,15 @@ export function buildLakeEldermere(ctx: WildernessCtx) {
     shutters: [0x3d6b4f],
     styles: { stone: 0.5, plaster: 0.2, timber: 0.3 },
     floorsMax: 1,
-  });
+  }, 'cottage');
   const lodgeRot = Math.PI * 0.9;
   addHouse(c, mat4(shoreX + 22, shoreY - 0.05, shoreZ + 14, lodgeRot), lodgeOpts, rng);
   ctx.obbs.push({ cx: shoreX + 22, cz: shoreZ + 14, hw: lodgeOpts.w / 2, hd: lodgeOpts.d / 2, rot: lodgeRot });
+  ctx.interactions.registerDoor({
+    id: 'door_lake_lodge', title: "Eldermere Fisherman's Lodge",
+    x: shoreX + 22, y: shoreY - 0.05, z: shoreZ + 14, rot: lodgeRot,
+    doorZ: lodgeOpts.d / 2 + 0.45, interior: 'cottage',
+  });
 
   // Fishing accessories: crates, drying nets, woodpile, lanterns
   addCrateCluster(c, mat4(shoreX + 6, shoreY + 0.1, shoreZ + 6, rng()), rng);
@@ -91,7 +98,7 @@ export function buildLakeEldermere(ctx: WildernessCtx) {
 /* ================================================================== *
  *  2. DENSE FOREST (The Whispering Weald / Ironwood Forest)          *
  * ================================================================== */
-export const WEALD_POS = { x: -2400, z: -2500, r: 480 };
+export const WEALD_POS = { x: -2150, z: -2150, r: 480 };
 
 export function buildWhisperingWeald(ctx: WildernessCtx) {
   const { c, rng } = ctx;
@@ -108,10 +115,15 @@ export function buildWhisperingWeald(ctx: WildernessCtx) {
     shutters: [0x4a3a2a],
     styles: { stone: 0.3, plaster: 0.1, timber: 0.6 },
     floorsMax: 1,
-  });
+  }, 'longhouse');
   const cabinRot = 0.55;
   addHouse(c, mat4(wx, wy - 0.05, wz, cabinRot), cabinOpts, rng);
   ctx.obbs.push({ cx: wx, cz: wz, hw: cabinOpts.w / 2, hd: cabinOpts.d / 2, rot: cabinRot });
+  ctx.interactions.registerDoor({
+    id: 'door_weald_cabin', title: "Woodcutter's Cabin",
+    x: wx, y: wy - 0.05, z: wz, rot: cabinRot,
+    doorZ: cabinOpts.d / 2 + 0.45, interior: 'cottage',
+  });
 
   // Woodcutter's barn, lumber piles, chopping block
   const barnO = addBarn(c, mat4(wx + 16, terrainHeight(wx + 16, wz - 8), wz - 8, cabinRot + 0.3), 'thatch', rng);
@@ -301,6 +313,10 @@ export function buildFortIronspire(ctx: WildernessCtx) {
   c.add('tiles', gableRoof(hqW + 1, hqD + 1, 4.6, 0.5), mat4(hqX, gy + hqH, hqZ), 0x7c2e2e);
   addFlag(c, mat4(hqX, gy + hqH + 4.8, hqZ), bannerRed);
   pushObb(hqX, hqZ, hqW / 2 + 1, hqD / 2 + 1);
+  ctx.interactions.registerDoor({
+    id: 'door_fort_hq', title: 'Fort Ironspire War Room',
+    x: hqX, y: gy, z: hqZ, rot: 0, doorZ: hqD / 2 + 0.5, interior: 'keep',
+  });
 
   // 7. Armory & Blacksmith with Forge
   const armX = gx + 12;
@@ -397,7 +413,7 @@ export function buildFortIronspire(ctx: WildernessCtx) {
 /* ================================================================== *
  *  4. THE SUNKEN MEADOW (Great Grassland & Prairie Plains)           *
  * ================================================================== */
-export const MEADOW_POS = { x: 2100, z: 2400, r: 420 };
+export const MEADOW_POS = { x: 1850, z: 2200, r: 420 };
 
 export function buildGoldenMeadow(ctx: WildernessCtx) {
   const { c, rng } = ctx;
@@ -414,9 +430,14 @@ export function buildGoldenMeadow(ctx: WildernessCtx) {
     shutters: [0x5c7a3a],
     styles: { stone: 0.7, plaster: 0.2, timber: 0.1 },
     floorsMax: 1,
-  });
+  }, 'cottage');
   addHouse(c, mat4(mx, my - 0.05, mz, 0.8), shepOpts, rng);
   ctx.obbs.push({ cx: mx, cz: mz, hw: shepOpts.w / 2, hd: shepOpts.d / 2, rot: 0.8 });
+  ctx.interactions.registerDoor({
+    id: 'door_mead_cottage', title: "Shepherd's Cottage",
+    x: mx, y: my - 0.05, z: mz, rot: 0.8,
+    doorZ: shepOpts.d / 2 + 0.45, interior: 'cottage',
+  });
 
   // 2. Livestock Fold / Sheep Pen (Post & Rail Fences)
   const penX = mx + 20;
@@ -460,47 +481,57 @@ export function buildGoldenMeadow(ctx: WildernessCtx) {
 /* ================================================================== *
  *  5. BORDER WATCHTOWERS ALONG HIGHWAYS & PASSES                     *
  * ================================================================== */
-export const WATCHTOWER_SITES = [
-  { name: 'Norbeck Watch (North Highway)', x: 70, z: -2700, rot: 0.1 },
-  { name: 'Wyle Gate Outpost (East Highway)', x: 2700, z: 50, rot: -1.5 },
-  { name: 'Highridge Post (South Pass)', x: -50, z: 2700, rot: 3.1 },
-  { name: 'Moorland Bastion (West Road)', x: -2700, z: 10, rot: 1.6 },
-  { name: 'Eldermere Beacon (Lake Overlook)', x: 2450, z: -1750, rot: 2.2 },
-];
+export { WATCHTOWER_SITES };
+
+export function buildWatchtower(ctx: WildernessCtx, site: WatchtowerSpec) {
+  const { c, rng } = ctx;
+  const wx = site.x;
+  const wz = site.z;
+  const wy = terrainHeight(wx, wz);
+
+  // Watchtower Structure
+  addWatchtower(c, mat4(wx, wy, wz, site.rot));
+  ctx.obbs.push({ cx: wx, cz: wz, hw: 4.8, hd: 4.8, rot: site.rot });
+
+  // Guard Station Tent & Campfire
+  const tentX = wx - Math.sin(site.rot) * 11;
+  const tentZ = wz - Math.cos(site.rot) * 11;
+  addTent(c, mat4(tentX, terrainHeight(tentX, tentZ), tentZ, site.rot + 0.4), rng);
+  ctx.obbs.push({ cx: tentX, cz: tentZ, hw: 2.4, hd: 2.4, rot: site.rot + 0.4 });
+
+  // Palisade barricade along highway edge
+  const fenceX = wx + Math.sin(site.rot + Math.PI / 2) * 8;
+  const fenceZ = wz + Math.cos(site.rot + Math.PI / 2) * 8;
+  addFence(c, mat4(fenceX, terrainHeight(fenceX, fenceZ), fenceZ, site.rot), 12, 0, 0x5a3f28);
+
+  // Highway Signal Lantern
+  ctx.lamps.push({ pos: new THREE.Vector3(wx + 4, wy + 4.5, wz + 4), light: true });
+
+  // Sentry Guard NPC
+  ctx.soldierPatrols.push({
+    x: wx + Math.sin(site.rot) * 4,
+    y: wy + 0.9,
+    z: wz + Math.cos(site.rot) * 4,
+    rot: site.rot,
+    type: 'guard',
+  });
+
+  // Signal brazier is a real interaction: it reports the road ahead.
+  ctx.interactions.register({
+    id: `brazier_${site.id}`,
+    kind: 'shrine',
+    title: `${site.name} Brazier`,
+    prompt: 'Read the signal flame',
+    pos: new THREE.Vector3(wx + Math.sin(site.rot) * 5.4, wy + 1.4, wz + Math.cos(site.rot) * 5.4),
+    radius: 3.0,
+    lines: [
+      `${site.name} keeps a brazier burning day and night.`,
+      'The watch rotates every four hours; cinders mark the road onward.',
+      'A carved tally on the parapet records how many patrols have passed this season.',
+    ],
+  });
+}
 
 export function buildBorderWatchtowers(ctx: WildernessCtx) {
-  const { c, rng } = ctx;
-
-  for (const site of WATCHTOWER_SITES) {
-    const wx = site.x;
-    const wz = site.z;
-    const wy = terrainHeight(wx, wz);
-
-    // Watchtower Structure
-    addWatchtower(c, mat4(wx, wy, wz, site.rot));
-    ctx.obbs.push({ cx: wx, cz: wz, hw: 3.6, hd: 3.6, rot: site.rot });
-
-    // Guard Station Tent & Campfire
-    const tentX = wx - Math.sin(site.rot) * 11;
-    const tentZ = wz - Math.cos(site.rot) * 11;
-    addTent(c, mat4(tentX, terrainHeight(tentX, tentZ), tentZ, site.rot + 0.4), rng);
-    ctx.obbs.push({ cx: tentX, cz: tentZ, hw: 2.4, hd: 2.4, rot: site.rot + 0.4 });
-
-    // Palisade barricade along highway edge
-    const fenceX = wx + Math.sin(site.rot + Math.PI / 2) * 8;
-    const fenceZ = wz + Math.cos(site.rot + Math.PI / 2) * 8;
-    addFence(c, mat4(fenceX, terrainHeight(fenceX, fenceZ), fenceZ, site.rot), 12, 0, 0x5a3f28);
-
-    // Highway Signal Lantern
-    ctx.lamps.push({ pos: new THREE.Vector3(wx + 4, wy + 4.5, wz + 4), light: true });
-
-    // Sentry Guard NPC
-    ctx.soldierPatrols.push({
-      x: wx + Math.sin(site.rot) * 4,
-      y: wy + 0.9,
-      z: wz + Math.cos(site.rot) * 4,
-      rot: site.rot,
-      type: 'guard',
-    });
-  }
+  for (const site of WATCHTOWER_SITES) buildWatchtower(ctx, site);
 }

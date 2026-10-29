@@ -23,11 +23,20 @@ const PRESETS: Record<Quality, Preset> = {
   ultra: { dpr: 1.75, shadow: 3072, samples: 4, view: 1.2 },
 };
 
+export interface LayerCost {
+  name: string;
+  calls: number;
+  tris: number;
+}
+
 export interface FrameStats {
   fps: number;
   calls: number;
   triangles: number;
   chunks: number;
+  /** per-layer draw-call / triangle budget, only filled while the F3 overlay is on */
+  layers?: LayerCost[];
+  ms?: number;
 }
 
 export class Engine {
@@ -43,6 +52,8 @@ export class Engine {
   tilt = true;
   quality: Quality = 'balanced';
   onStats?: (s: FrameStats) => void;
+  /** F3 performance overlay: per-layer draw calls and triangles. */
+  showDebug = false;
   private frames = 0;
   private fpsTime = 0;
 
@@ -145,17 +156,27 @@ export class Engine {
 
       const mode = this.controls.mode;
       const center = mode === 'overview' ? this.controls.orbit.target : this.camera.position;
-      // stream detailed terrain around what the player is looking at
-      this.world.terrain.update(center.x, center.z);
+      // Pocket interiors are isolated from the streamed terrain: don't build
+      // chunks 12 km off-map while the player is indoors.
+      const indoors = !!this.world.interactions?.currentInterior;
+      if (!indoors) this.world.terrain.update(center.x, center.z);
       const radius = mode === 'overview'
         ? THREE.MathUtils.clamp(this.camera.position.distanceTo(this.controls.orbit.target) * 0.85, 70, 260)
         : mode === 'fly'
           ? THREE.MathUtils.clamp(70 + (this.camera.position.y - this.world.groundHeight(this.camera.position.x, this.camera.position.z)) * 1.2, 90, 260)
           : 90;
-      this.world.updateSunShadow(new THREE.Vector3(center.x, this.world.groundHeight(center.x, center.z), center.z), Math.round(radius / 10) * 10);
+      if (!indoors) {
+        this.world.updateSunShadow(new THREE.Vector3(center.x, this.world.groundHeight(center.x, center.z), center.z), Math.round(radius / 10) * 10);
+      }
 
       this.renderer.info.reset();
-      this.composer.render();
+      if (this.tiltH.enabled) {
+        this.composer.render();
+      } else {
+        // No post-processing is active (stroll / fly / ride), so skip the
+        // HalfFloat multisampled offscreen target and OutputPass entirely.
+        this.renderer.render(this.world.scene, this.camera);
+      }
       this.frames++;
       this.fpsTime += dt;
       if (this.fpsTime > 0.5) {
@@ -165,6 +186,8 @@ export class Engine {
           calls: info.calls,
           triangles: info.triangles,
           chunks: this.world.terrain.loadedChunks,
+          layers: this.showDebug ? this.world.debugLayers(this.camera) : undefined,
+          ms: Math.round((this.fpsTime / Math.max(1, this.frames)) * 10000) / 10,
         });
         this.frames = 0;
         this.fpsTime = 0;
